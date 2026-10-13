@@ -221,8 +221,47 @@ the previous one is `libdirectfb-1.4.so.0.0.0.pre-ckfix`.
 **Verified.** Columns 183/631 empty after the restart (1271: one corner pixel of
 the frame); operator switched deck selection and BROWSE and back: clean.
 
+## BEAT FX page vs. STATUS pads on touch (2026-10-13): RESOLVED
+
+**Symptom.** With the strip's STATUS | BEAT FX toggle on BEAT FX, taps on the BEAT FX
+BANK (FLANGER/ECHO/VINYL BRAKE/DELAY) or the X-PAD flipped the strip back to the pads,
+changed a deck's pad mode (HOT CUE -> GATE CUE -> BEAT LOOP -> SLIP LOOP -> BEAT JUMP),
+or fired a hot cue.
+
+**Two causes, measured with a monitor that logged every raw touch (mapped to logical
+x,y), the page on the glass, both pad modes and pointsrc's log, with timestamps:**
+
+1. *The shim's HOT CUE row (hc_zone) was gated on the performance screen only.* Its
+   sixteen cells lie under the bank buttons, so on the BEAT FX page it took those taps:
+   rbp never saw them, and a registered cue under the finger fired (`hot cue deck1 pad4
+   -> key 0x411a` for a tap on DELAY; the pad key also makes rbp show the pads).
+2. *rbp's own pad-mode hit zone stays live under the BEAT FX page.* On STATUS a tap on
+   the caption row changes the deck's pad mode (rbp's behaviour, kept). On BEAT FX the
+   same zone answers under the "BEAT FX BANK / X-PAD" caption and the top edge of the
+   buttons: taps at y 508 and 517 flipped the strip and moved deck 2's pad mode; from
+   y 529 down never.
+
+**Fix (fbshim.so, pointsrc.c):**
+
+* `strip_page()` reads WHICH PAGE IS DRAWN off the KMS scanout (`rx3_kms_peek()`, new
+  in drmband.c): eight probes on the caption row, y 500/501, are rbp's grey hatch on
+  the BEAT FX page and black on the pads, chosen from 245 captures (3x3 neighbourhood
+  stable in every frame, so the scaled route reads the same). 6 of 8 decide, else
+  unknown.
+* The HOT CUE row acts only when `strip_page() == 0`; unknown stands it down.
+* On the BEAT FX page a report with y 495..528 is moved to y 536, the middle row of the
+  same button (`strip_bfx_y()`), so the press lands on the button aimed at and never
+  in rbp's pad-mode zone.
+
+**Not rbp memory.** IsBeatFxSelected's word and setBeatFxSelected's lag the strip, and
+the best .bss-diff candidate (a Winscape window field, 1770/1771 over 90 s) later read
+STATUS under a drawn BEAT FX page and let cue B fire for two taps on ECHO. rbp_abi.h
+keeps that record.
+
+**Verified by the operator:** 7 toggles, all four bank buttons (top edge included),
+29 X-PAD taps -- no flip to pads, no pad-mode change, no cue; on STATUS the pad hot
+cue fires. Previous shim: `fbshim.so.pre-stripgate`.
+
 ## Open
 
-* Overlay bands vs. KMS: the effect picker and the drawers can now get planes;
-  BEAT FX / CUE POINT mix still to be re-checked with them.
 * Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.

@@ -27,6 +27,7 @@
                           * 2026-10-07; fxpad_zone.h carries the rectangle, the two
                           * wire forms and the momentary restore */
 #include "hc_zone.h"
+#include "drmband.h"
 #include "syscalls.h"
 #include "envutil.h"
 #include "usb_label.h"   /* what a media device's name may contain -- the same rules
@@ -1212,6 +1213,85 @@ static int rbp_perf_screen(void)
     return rbp_i32(UIBROWSE_GLOBAL + UIBROWSE_OFF_MODE) == BROWSE_MODE_PLAY;
 }
 
+/* Which page does the pad strip SHOW: 0 the HOT CUE grid (STATUS), 1 the BEAT FX BANK
+ * + X-PAD, -1 unknown. Read off the scanout, because what the finger lands on is what
+ * is drawn there and nothing in rbp's memory tracks that reliably: a GUI window's
+ * page word (s_WinscapeWorkMemory, +0x58) agreed with the screen for 90 s and then,
+ * on 2026-10-13, read STATUS under a drawn BEAT FX page while two STATUS | BEAT FX
+ * taps flipped the glass -- and the HOT CUE row fired cue B for two taps on ECHO.
+ * IsBeatFxSelected's word lags the strip as well (rbp_abi.h's STRIP_* block).
+ *
+ * The test is the strip's caption row, y 500..501: under the BEAT FX page rbp fills
+ * it with its grey hatch (alternating 0x21/0x31), under the pads it is black. The
+ * eight points were chosen from 245 captures (109 BEAT FX, 136 pads, every pad mode,
+ * lit and unlit cells, both decks) as pixels whose whole 3x3 neighbourhood was hatch
+ * in every BEAT FX frame and black in every pads frame -- the neighbourhood is what
+ * keeps the answer when the picture is scaled. 6 of 8 decide; anything else
+ * (another screen, a frame mid-redraw, no scanout) is -1, which the callers read as
+ * "do nothing": the HOT CUE row stands down, the y band is not moved. */
+static const short strip_probe[8][2] = {
+    { 102, 500 }, { 230, 501 }, { 390, 501 }, { 550, 501 },
+    { 670, 501 }, { 830, 501 }, { 1007, 501 }, { 1150, 501 },
+};
+
+static int strip_page(void)
+{
+    const unsigned char *pix;
+    const void *base;
+    int w, h, pitch, i, hatch = 0, black = 0;
+    long pw, ox;
+
+    if (rx3_kms_peek(&base, &w, &h, &pitch) < 0 || w <= 0 || h <= 0)
+        return -1;
+    pix = base;
+    /* The picture is 1280x800 logical, fitted by height and centred: 1:1 with
+     * KMS_MODE=1280x800, 1728x1080 at x 96 on the scaled 1920x1080 route. */
+    pw = (long)POINT_LOGICAL_W * h / POINT_LOGICAL_H;
+    ox = (w - pw) / 2;
+    for (i = 0; i < 8; i++) {
+        long sx = ox + (long)strip_probe[i][0] * pw / POINT_LOGICAL_W;
+        long sy = (long)strip_probe[i][1] * h / POINT_LOGICAL_H;
+        const unsigned char *q;
+        int b, g, r;
+
+        if (sx < 0 || sx >= w || sy < 0 || sy >= h)
+            return -1;
+        q = pix + sy * pitch + sx * 4;          /* XRGB8888: B G R X */
+        b = q[0]; g = q[1]; r = q[2];
+        if (r >= 0x18 && r <= 0x38 && g >= 0x18 && g <= 0x38 && b >= 0x18 && b <= 0x38)
+            hatch++;
+        else if (r < 8 && g < 8 && b < 8)
+            black++;
+    }
+    if (hatch >= 6)
+        return 1;
+    if (black >= 6)
+        return 0;
+    return -1;
+}
+
+static int strip_shows_pads(void)
+{
+    return strip_page() == 0;
+}
+
+/* THE PAD-MODE BAND UNDER THE BEAT FX PAGE. rbp's STATUS page changes a deck's pad
+ * mode when its caption row is touched (HOT CUE -> GATE CUE -> BEAT LOOP ...), and that
+ * hit zone stays live when the strip shows BEAT FX BANK + X-PAD instead: measured
+ * 2026-10-13, on the BEAT FX page a tap at y 508 and at y 517 over the X-PAD flipped
+ * the strip back to the pads AND moved deck 2's pad mode, while every tap from y 529
+ * down did what the button says. So on that page only, a report in the band is moved
+ * down to the middle row of the same buttons (bank boxes y 517..553, X-PAD 512..558):
+ * the finger still presses the button it was aimed at, and rbp's pad-mode zone never
+ * sees it. On the pads page, or when the page cannot be read, nothing is moved. */
+static int strip_bfx_y(int y)
+{
+    if (y >= STRIP_PADMODE_Y0 && y <= STRIP_PADMODE_Y1 && rbp_perf_screen() &&
+        strip_page() == 1)
+        return STRIP_BUTTON_ROW_Y;
+    return y;
+}
+
 /* ------------------------------------------------ the HOT CUE pad row (hc_zone.h)
  *
  * The operator's ask of 2026-10-06 -- a touch on a HOT CUE pad fires that pad's cue,
@@ -2020,9 +2100,16 @@ static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
      * same of its own rects -- and a press this module took has been withheld from rbp
      * for its whole life, so its release must reach the latch wherever it lands or rbp is
      * handed an up for a down it never saw. hc_latched() is that term, and hc_feed()
-     * refuses the release of a gesture that began off the grid on its own. */
+     * refuses the release of a gesture that began off the grid on its own.
+     *
+     * AND ONLY WHILE THE GRID IS WHAT THE STRIP SHOWS (strip_shows_pads()): with the
+     * STATUS | BEAT FX toggle on BEAT FX the same rows hold the BEAT FX BANK, and this
+     * rung used to take those taps -- the bank never saw them and a registered cue
+     * under the finger fired (2026-10-13, `hot cue deck1 pad4 -> key 0x411a` on a tap
+     * of DELAY). */
     if (verdict == MZ_FEED_NONE && hc_touch &&
-        (hc_latched() || (rbp_perf_screen() && !menu_window_is_open() &&
+        (hc_latched() || (rbp_perf_screen() && strip_shows_pads() &&
+                          !menu_window_is_open() &&
                           !menu_is_open() && !side_any_open()))) {
         int hdeck = -1, hpad = 0;
 
@@ -2081,6 +2168,7 @@ static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
             menu_fire(button, held_ms);
         return;
     }
+    y = strip_bfx_y(y);
     quantize_tap(down, x, y);
     tscfake_emit(down, x, y);
     /* ...and this is the only line that publishes a finger of rbp's own. A TAKEN report

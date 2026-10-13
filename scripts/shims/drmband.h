@@ -272,4 +272,7 @@ int rx3_kms_vsync(void);
 /* KMS_MODE's WxH, 1 if set: the screen's size for the page painters. */
 int rx3_kms_mode_geom(int *w, int *h);
 
+/* The live scanout (32 bpp only) for pixel readers; -1 when there is none. */
+int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes);
+
 #endif /* RBPI4B_DRMBAND_H */

@@ -743,6 +743,31 @@ static const signed char bfx_type_to_pos[15] = {
 #define PADMODE_DECK2_OFF        0x10
 #define PADMODE_BYTE_OFF         0x281
 
+/* WHAT THE PAD STRIP SHOWS: the HOT CUE grid (STATUS) or the BEAT FX BANK + X-PAD.
+ *
+ * hc_zone.c's sixteen cells sit under the BEAT FX BANK's buttons when that page is up,
+ * so the HOT CUE row must know which page is on the glass or it eats the bank's taps
+ * and fires a registered cue for them (2026-10-13: a tap on DELAY logged
+ * `hot cue deck1 pad4 -> key 0x411a`). pointsrc.c's strip_page() answers it from the
+ * SCANOUT's pixels, and this block records why it does not read rbp:
+ *
+ *   - IsBeatFxSelected @0x13320c (word 0x032b2c58) and setBeatFxSelected's 0x0216b590
+ *     are the browse-side "BEAT FX chosen" flag; they stayed 1 for ~6 s while rbp
+ *     drew the pads, and read 0 under a drawn BEAT FX page.
+ *   - The best word a .bss diff over six toggles found, field +0x58 of the strip's
+ *     right-half Winscape window (number 0x1801, x 640..1280 y 495..575, inside
+ *     s_WinscapeWorkMemory @0x025833f8; seen at 0x025b3360), agreed 1770/1771 for
+ *     90 s -- and then read STATUS under a BEAT FX page while two toggle taps flipped
+ *     the glass, and the HOT CUE row fired cue B for two taps on ECHO.
+ *
+ * None of these is the page; the page is the drawing. */
+
+/* rbp's pad-mode caption hit zone, still live under the BEAT FX page (pointsrc.c's
+ * strip_bfx_y()): changed the mode at y 502..517, never from y 529 down. */
+#define STRIP_PADMODE_Y0        495
+#define STRIP_PADMODE_Y1        528
+#define STRIP_BUTTON_ROW_Y      536            /* middle of the bank / X-PAD buttons */
+
 /* playengine::PlayEngine singleton + isLooping(EnPlayerChannel) (see the LED
  * section below, which defines these later in the file) */
 #define ALOOP_PLAYENGINE_GLOBAL 0x011497d0UL

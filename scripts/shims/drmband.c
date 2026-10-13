@@ -855,6 +855,25 @@ void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes)
     return pix;
 }
 
+/* The scanout as it stands, for readers that ask what is ON the glass (pointsrc's
+ * strip_drawn_page()): 0 and the geometry when a 32 bpp scanout exists, -1 when
+ * there is none (knob off, not set up yet, failed). Never sets one up. */
+int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes)
+{
+    int ok;
+
+    pthread_mutex_lock(&g_scan_lock);
+    ok = g_scan.pix != NULL && g_scan.bpp == 32;
+    if (ok) {
+        *pix = g_scan.pix;
+        *w = g_scan.w;
+        *h = g_scan.h;
+        *pitch_bytes = g_scan.pitch_bytes;
+    }
+    pthread_mutex_unlock(&g_scan_lock);
+    return ok ? 0 : -1;
+}
+
 /* Block until the scanout's CRTC starts its next vertical blank. With /dev/fb0
  * the pace came from FBIOPAN_DISPLAY (fb_shim.c's pan pacer, a sleep); the KMS
  * route does not pan, so the driver calls this before each present instead, and
