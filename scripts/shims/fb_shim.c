@@ -54,6 +54,7 @@
 #include "syscalls.h"
 #include "envutil.h"
 #include "pointsrc.h"          /* pointsrc_log, for the vsync counter below */
+#include "rbp_key.h"           /* is_rbp_process, for the frame limiter below */
 
 #include <stdarg.h>
 #include <errno.h>
@@ -62,6 +63,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 #define MAX_GPIO_FDS 256
 static char is_gpio_fd[MAX_GPIO_FDS];
@@ -365,4 +367,79 @@ int ioctl(int fd, unsigned long request, ...)
     default:
         return real_ioctl(fd, request, arg);
     }
+}
+
+/* ------------------------------------------------------------- rbp's frame limiter
+ *
+ * DS_HW_UpdateScreen (rbp v1.20) paces the UI itself:
+ *
+ *     elapsed = now - <time the previous flip RETURNED>;
+ *     if (elapsed < 16000) usleep(16000 - elapsed);
+ *     flip();
+ *
+ * 16 ms measured from the END of the flip. On the RX3 a flip is a pan and costs
+ * nothing, so that is 60 fps. On the KMS route (drmband.c rx3_kms_scanout) the flip
+ * waits for vblank and presents, ~13.5 ms, so the two pacers add up: 16 + 13.5 ->
+ * 33 ms, 30 fps (strace: usleep ~9.3 ms, then WAIT_VBLANK ~8 ms, every frame).
+ *
+ * RBP_FRAME_US rewrites the 16000 in its two instructions, so the vblank wait is
+ * the one pace. 1000 keeps a 1 ms floor, which is what stops a frame loop from
+ * spinning if the vblank wait ever fails. Only these exact two words are touched,
+ * and only if both still read as rbp v1.20 has them; ARM immediates are 8 bits
+ * rotated, so the value is rounded to one that encodes (1000 does, as 0xfa ror 30).
+ * Unset (the default) = rbp untouched. */
+#define RBP_LIMIT_CMP_VA  0x001a6844u   /* cmp r3, #16000      e3530dfa */
+#define RBP_LIMIT_RSB_VA  0x001a6918u   /* rsb r0, r3, #16000  e2630dfa */
+
+static int arm_imm12(unsigned long v, unsigned int *enc)
+{
+    unsigned int rot;
+
+    for (rot = 0; rot < 16; rot++) {
+        uint32_t x = (uint32_t)v;
+        uint32_t r = rot ? (x << (2 * rot)) | (x >> (32 - 2 * rot)) : x;
+
+        if (r <= 0xff) {
+            *enc = (rot << 8) | (unsigned int)r;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+__attribute__((constructor))
+static void rbp_frame_limiter_patch(void)
+{
+    volatile uint32_t *cmp = (volatile uint32_t *)RBP_LIMIT_CMP_VA;
+    volatile uint32_t *rsb = (volatile uint32_t *)RBP_LIMIT_RSB_VA;
+    long us = (long)env_double("RBP_FRAME_US", -1.0);
+    unsigned int enc;
+    long pg = sysconf(_SC_PAGESIZE);
+    uintptr_t lo, hi;
+
+    if (us < 0 || !is_rbp_process())
+        return;
+    if (us > 16000 || arm_imm12((unsigned long)us, &enc) != 0) {
+        pointsrc_log("frame limiter: RBP_FRAME_US=%ld does not encode as an ARM "
+                     "immediate -- rbp left at 16000 us", us);
+        return;
+    }
+    if (*cmp != 0xe3530dfau || *rsb != 0xe2630dfau) {
+        pointsrc_log("frame limiter: rbp words at %#x/%#x are %08x/%08x, not v1.20's "
+                     "e3530dfa/e2630dfa -- not patched", RBP_LIMIT_CMP_VA,
+                     RBP_LIMIT_RSB_VA, (unsigned)*cmp, (unsigned)*rsb);
+        return;
+    }
+    lo = RBP_LIMIT_CMP_VA & ~(uintptr_t)(pg - 1);
+    hi = (RBP_LIMIT_RSB_VA + 4 + pg - 1) & ~(uintptr_t)(pg - 1);
+    if (mprotect((void *)lo, hi - lo, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        pointsrc_log("frame limiter: mprotect: %s -- not patched", strerror(errno));
+        return;
+    }
+    *cmp = (0xe3530dfau & ~0xfffu) | enc;
+    *rsb = (0xe2630dfau & ~0xfffu) | enc;
+    mprotect((void *)lo, hi - lo, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)lo, (char *)hi);
+    pointsrc_log("frame limiter: rbp's 16000 us floor -> %ld us (%08x/%08x): the "
+                 "vblank wait paces the UI", us, (unsigned)*cmp, (unsigned)*rsb);
 }

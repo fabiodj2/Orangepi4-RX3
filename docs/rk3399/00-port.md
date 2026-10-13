@@ -122,10 +122,20 @@ Result, same unit: `PRESENT: 300 presented / 300 flips, avg 5.00 ms, worst
 14.54 ms, skip 1`; 0 faults/s; gui_task 54% → 37%; no flicker. Overlay bands
 (menu `plane 40`) stay above the picture (`plane 33`, primary).
 
-**rbp itself paces at 30 fps**: its render thread `nanosleep`s to a ~33 ms frame
-(strace: sleep ~9.3 ms, then FBIO_WAITFORVSYNC, which is ENOTTY here and returns at
-once). So the panel now gets a steady 30 fps, every frame held exactly two vblanks;
-before, `skip=2` halved that to ~15 and deferred I/O made it irregular.
+**rbp's own limiter, and 60 fps.** `DS_HW_UpdateScreen` (VA `0x1a6844`) does
+`if (now - t_prev_flip_returned < 16000) usleep(16000 - elapsed)` before each flip
+-- 60 fps on the RX3, where a flip is a free pan. Here the flip waits for vblank and
+presents (~13.5 ms), the two pacers add up, and the UI ran at 30 fps (found by
+sampling gui_task's stack from `/proc/<pid>/task/<tid>/syscall` + `/proc/<pid>/mem`
+while it slept: `usleep` ← `DS_HW_UpdateScreen+0x3f8` ← `ui_com_draw`).
+`RBP_FRAME_US=1000` makes the shim rewrite the immediate in both instructions at
+load (`fb_shim.c rbp_frame_limiter_patch`; `e3530dfa`/`e2630dfa` →
+`e3530ffa`/`e2630ffa`, only if the words match v1.20), leaving vblank as the only
+pace. The binary on disk is untouched.
+
+Measured with `FB_VSYNC_RATE=1`: 60.0/s in most seconds, 58-60 in the rest;
+`avg 4.21 ms, worst 15.34 ms, skip 1`; gui_task ~72% (twice the frames), system
+~70% idle; no audio xruns.
 
 Build note: the module is linked with `LIBS="-ldl -lpthread"` (a bare `LIBS=`
 drops libtool's `-lpthread`), and then the soname fix-up — skipping it gives
@@ -138,7 +148,6 @@ route, measured above). The pre-change binaries are kept beside the new ones as
 
 ## Open
 
-* rbp's 30 fps frame limiter: 60 would need its frame period found in the binary.
 * Overlay bands vs. KMS: the effect picker and the drawers can now get planes;
   BEAT FX / CUE POINT mix still to be re-checked with them.
 * Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.

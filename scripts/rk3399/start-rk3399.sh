@@ -120,6 +120,10 @@ nohup "$DDJ" -v -f "$RUNTIME/tmp/rb-ctrl.fifo" \
 # (drmband.c rx3_kms_scanout, fbdev.c fbdev_kms_scanout). DFB_PRESENT_SKIP=1
 # because the pixel budget's skip=2 was sized for the slow route. Either at 0
 # (RB_KMS_SCANOUT=0, RB_DFB_PRESENT_SKIP=) puts back the measured old path.
+# RBP_FRAME_US=1000: rbp's own limiter sleeps until 16 ms after the previous
+# flip RETURNED; with a flip that waits for vblank that is 30 fps. The shim
+# rewrites its 16000 to 1000 in memory (fb_shim.c) so vblank alone paces it.
+# RB_RBP_FRAME_US= (empty) leaves rbp untouched.
 # FB_LIE_BPP=16 must agree with rbp's layer word at 0x1a3ab8 (RGB16 in our
 # binary); rbpi4b's patch-rbp-depth.py is the way to 32 (both or neither).
 # DFB_PRESENT unset = 'off', which the driver auto-upgrades to 'scale' on a fb
@@ -142,6 +146,8 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     DRM_BAND_CARD="$DRI_CARD" \
     KMS_SCANOUT="${RB_KMS_SCANOUT:-1}" \
     DFB_PRESENT_SKIP="${RB_DFB_PRESENT_SKIP:-1}" \
+    RBP_FRAME_US="${RB_RBP_FRAME_US:-1000}" \
+    FB_VSYNC_RATE="${RB_FB_VSYNC_RATE:-0}" \
     RX3_AUDIO_DEVICE='hw:CARD=DDJ400,DEV=0' \
     RX3_HP_GAIN_X="$HP_GAIN" \
     RX3_KEYSHIFT=1 \
