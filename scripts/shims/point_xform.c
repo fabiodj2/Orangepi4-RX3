@@ -15,6 +15,10 @@
 #include "envutil.h"
 
 #include <string.h>
+#include <fcntl.h>
+#include <linux/fb.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #define POINT_SPEED_DEFAULT 1.0
 
@@ -42,6 +46,31 @@ void point_xform_init(struct point_xform *x)
     x->swap_xy  = env_flag("POINT_SWAP_XY", 0);
     x->invert_x = env_flag("POINT_INVERT_X", 0);
     x->invert_y = env_flag("POINT_INVERT_Y", 0);
+
+    /* The real fb geometry, by raw syscall: ioctl() in this process is
+     * fb_shim.c's, which reports the logical 1280x800 on purpose. */
+    if (env_flag("POINT_ABS_FIT", 1)) {
+        int fd = (int)syscall(SYS_openat, AT_FDCWD, env_str("FB_DEV", "/dev/fb0"),
+                              O_RDONLY | O_CLOEXEC);
+        struct fb_var_screeninfo var;
+
+        if (fd >= 0) {
+            memset(&var, 0, sizeof(var));
+            if (syscall(SYS_ioctl, fd, FBIOGET_VSCREENINFO, &var) == 0 &&
+                var.xres > 0 && var.yres > 0 &&
+                ((int)var.xres != POINT_LOGICAL_W || (int)var.yres != POINT_LOGICAL_H)) {
+                int stretch = strcmp(env_str("DFB_PRESENT_FIT", "fit"), "stretch") == 0;
+
+                x->fit_fb_w = (int)var.xres;
+                x->fit_fb_h = (int)var.yres;
+                point_fit(POINT_LOGICAL_W, POINT_LOGICAL_H, x->fit_fb_w, x->fit_fb_h,
+                          stretch, &x->fit_dw, &x->fit_dh, &x->fit_bx, &x->fit_by);
+                if (x->fit_dw < 1 || x->fit_dh < 1)
+                    x->fit_fb_w = 0;
+            }
+            syscall(SYS_close, fd);
+        }
+    }
 }
 
 void point_xform_abs(const struct point_xform *x, int raw_x, int raw_y,
@@ -68,7 +97,15 @@ void point_xform_abs(const struct point_xform *x, int raw_x, int raw_y,
      * which fits in an int on paper and is exactly the kind of thing that stops
      * fitting when someone adds a 24-bit digitizer. The multiply is done before
      * the divide in both branches because lx/ly are only 1280/800 wide. */
-    if (x->swap_xy) {
+    if (x->fit_fb_w > 0) {
+        /* Panel position in fb pixels first, then into the picture rectangle:
+         * a touch on a bar clamps to the nearest UI edge. */
+        long px = (x->swap_xy ? ry * x->fit_fb_w / range_y : rx * x->fit_fb_w / range_x);
+        long py = (x->swap_xy ? rx * x->fit_fb_h / range_x : ry * x->fit_fb_h / range_y);
+
+        lx = (px - x->fit_bx) * POINT_LOGICAL_W / x->fit_dw;
+        ly = (py - x->fit_by) * POINT_LOGICAL_H / x->fit_dh;
+    } else if (x->swap_xy) {
         lx = ry * POINT_LOGICAL_W / range_y;
         ly = rx * POINT_LOGICAL_H / range_x;
     } else {

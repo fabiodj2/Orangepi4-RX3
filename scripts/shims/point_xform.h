@@ -44,6 +44,15 @@ struct point_xform {
      * divide by 2048 exactly as the old hardcoded math did. */
     int raw_min_x, raw_max_x;
     int raw_min_y, raw_max_y;
+
+    /* RK3399 port: where the UI picture sits on the panel. An on-screen touch
+     * panel covers the whole fb, but the present path draws the 1280x800 UI
+     * into point_fit()'s rectangle (1728x1080 at 96,0 on a 1920x1080 fb), so
+     * an absolute report must be mapped through that rectangle, not across the
+     * panel. fit_fb_w == 0 means "unknown or disabled": the original whole-
+     * panel mapping. From the real fb at init; POINT_ABS_FIT=0 disables. */
+    int fit_fb_w, fit_fb_h;
+    int fit_dw, fit_dh, fit_bx, fit_by;
 };
 
 /* Defaults for a device that reports nothing usable — the SC Live 4 touch

@@ -546,6 +546,11 @@ static void absorb_into_xform(struct point_xform *x, int fd, int kind)
         pointsrc_log("pointsrc: raw range x=[%d..%d] y=[%d..%d] swap=%d inv_x=%d inv_y=%d",
              x->raw_min_x, x->raw_max_x, x->raw_min_y, x->raw_max_y,
              x->swap_xy, x->invert_x, x->invert_y);
+        if (x->fit_fb_w > 0)
+            pointsrc_log("pointsrc: abs fit: panel %dx%d -> picture %dx%d at %d,%d",
+                 x->fit_fb_w, x->fit_fb_h, x->fit_dw, x->fit_dh, x->fit_bx, x->fit_by);
+        else
+            pointsrc_log("pointsrc: abs fit: whole panel (fb is the logical size, or POINT_ABS_FIT=0)");
     }
 }
 
