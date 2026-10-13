@@ -31,6 +31,7 @@
 #include "pointsrc.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -38,12 +39,26 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-/* The card rbp's picture is actually on. NOT card0: recon measured card0 = v3d,
- * a render node with no CRTC at all, and card1 = vc4-drm, whose primary plane is
- * the framebuffer /dev/fb0 mmaps. Hardcoded rather than a knob because it is a
- * fact about the board; the A/B that matters is MENU_PLANE, which is the band's
- * route and lives in menu_draw.c. */
-#define DRM_BAND_CARD  "/dev/dri/card1"
+/* The card rbp's picture is actually on. On the Pi 4 that is card1: recon measured
+ * card0 = v3d, a render node with no CRTC at all, and card1 = vc4-drm, whose primary
+ * plane is the framebuffer /dev/fb0 mmaps. It is a fact about the BOARD, and boards
+ * disagree: on the RK3399 (Orange Pi 4 LTS) card0 = rockchip-drm, the display, and
+ * card1 = panfrost, the GPU, with no CRTC. So DRM_BAND_CARD overrides it, read once
+ * when the device is first acquired; the A/B that matters is still MENU_PLANE, which
+ * is the band's route and lives in menu_draw.c. */
+#define DRM_BAND_CARD_DEFAULT  "/dev/dri/card1"
+
+static const char *band_card(void)
+{
+    static const char *card;
+
+    if (!card) {
+        const char *e = getenv("DRM_BAND_CARD");
+        card = (e && *e) ? e : DRM_BAND_CARD_DEFAULT;
+    }
+    return card;
+}
+#define DRM_BAND_CARD  band_card()
 
 /* vc4's planes report 39 formats -- measured, and the reason a fixed 32-format
  * buffer cost a whole run in work/drmplane.c: GETPLANE returns EINVAL when
@@ -523,4 +538,215 @@ void drm_band_teardown(struct drm_band *b)
 
     memset(b, 0, sizeof *b);
     b->fd = -1;
+}
+
+/* ------------------------------------------------------------- the scanout
+ *
+ * THE WHOLE PICTURE ON A DUMB BUFFER, for a board whose /dev/fb0 is not the memory
+ * the display scans. On the RK3399 (Armbian 6.18) rockchip-drm's framebuffer has a
+ * dirty() hook, so fbdev emulation hands out a vmalloc SHADOW with deferred I/O:
+ * every page written faults (35,770 faults/s measured from rbp), and a kernel worker
+ * copies the damage to the real buffer on its own schedule, mid-frame. That is a
+ * 15.6 ms present where the Pi does 3.3 ms, a slow panel, and torn frames.
+ *
+ * So, behind KMS_SCANOUT=1, the shim puts a dumb buffer of the fb's geometry on the
+ * PRIMARY plane -- the one carrying fbcon's fb on the live CRTC -- and everyone who
+ * used to write /dev/fb0 writes here instead: the driver's present (fbdev.c looks
+ * this symbol up with dlsym) and the shim's own page painters (menu_draw.c,
+ * fb_cursor.c). Same geometry, same format, so nothing downstream changes but the
+ * pointer and, possibly, the pitch. The overlay bands above stay above: they are
+ * overlays and this is the primary.
+ *
+ * Held for the life of the process, through the shared device holder above, so a
+ * band coming and going never drops master from under it. The kernel takes it all
+ * down when the process exits, and fbdev emulation gets the CRTC back.
+ *
+ * NULL, with one log line, means "use /dev/fb0 as before": the knob is off, the
+ * geometry asked for is not one this can carry, or a step failed. */
+static pthread_mutex_t g_scan_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    int   tried;
+    void *pix;
+    int   w, h, bpp, pitch_bytes;
+    int   fd;
+    unsigned int crtc_index;
+} g_scan = { .fd = -1 };
+
+static int primary_on(int fd, unsigned int crtc_id, unsigned int *plane)
+{
+    struct drm_mode_crtc c;
+    struct drm_mode_get_plane_res pr;
+    unsigned int *ids, i, n;
+
+    memset(&c, 0, sizeof c);
+    c.crtc_id = crtc_id;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &c) < 0 || !c.fb_id)
+        return -1;
+
+    memset(&pr, 0, sizeof pr);
+    if (real_ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pr) < 0 || !pr.count_planes)
+        return -1;
+    n = pr.count_planes;
+    ids = calloc(n, sizeof *ids);
+    if (!ids)
+        return -1;
+    pr.plane_id_ptr = (__u64)(uintptr_t)ids;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pr) < 0) {
+        free(ids);
+        return -1;
+    }
+    for (i = 0; i < n && i < pr.count_planes; i++) {
+        struct drm_mode_get_plane gp;
+
+        memset(&gp, 0, sizeof gp);
+        gp.plane_id = ids[i];
+        if (real_ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &gp) < 0)
+            continue;
+        if (gp.crtc_id == crtc_id && gp.fb_id == c.fb_id &&
+            plane_type_of(fd, ids[i]) == DRM_PLANE_TYPE_PRIMARY) {
+            *plane = ids[i];
+            free(ids);
+            return 0;
+        }
+    }
+    free(ids);
+    return -1;
+}
+
+static void *scanout_setup(int w, int h, int bpp, int *pitch_bytes)
+{
+    struct drm_mode_create_dumb cd;
+    struct drm_mode_fb_cmd fc;
+    struct drm_mode_map_dumb md;
+    struct drm_mode_set_plane sp;
+    unsigned int crtc_id, crtc_index, plane;
+    void *pix;
+    int fd;
+
+    if (bpp != 32 && bpp != 16)
+        return NULL;
+    fd = dev_acquire();                 /* held for good: never released */
+    if (fd < 0)
+        return NULL;
+    if (live_crtc(fd, &crtc_id, &crtc_index) != 0 ||
+        primary_on(fd, crtc_id, &plane) != 0) {
+        pointsrc_log("kms scanout: no live CRTC/primary plane on %s", DRM_BAND_CARD);
+        return NULL;
+    }
+
+    memset(&cd, 0, sizeof cd);
+    cd.width = (__u32)w;
+    cd.height = (__u32)h;
+    cd.bpp = (__u32)bpp;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd) < 0) {
+        pointsrc_log("kms scanout: CREATE_DUMB %dx%d %d bpp: %s", w, h, bpp,
+                     strerror(errno));
+        return NULL;
+    }
+    memset(&fc, 0, sizeof fc);
+    fc.width = (__u32)w;
+    fc.height = (__u32)h;
+    fc.pitch = cd.pitch;
+    fc.bpp = (__u32)bpp;
+    fc.depth = (bpp == 32) ? 24 : 16;
+    fc.handle = cd.handle;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_ADDFB, &fc) < 0) {
+        pointsrc_log("kms scanout: ADDFB: %s", strerror(errno));
+        return NULL;
+    }
+    memset(&md, 0, sizeof md);
+    md.handle = cd.handle;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &md) < 0) {
+        pointsrc_log("kms scanout: MAP_DUMB: %s", strerror(errno));
+        return NULL;
+    }
+    pix = real_mmap(NULL, (size_t)cd.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    fd, md.offset);
+    if (pix == (void *)-1) {
+        pointsrc_log("kms scanout: mmap: %s", strerror(errno));
+        return NULL;
+    }
+    /* Black (XRGB 0 is black too) before it is shown, so the switch does not
+     * flash whatever the allocator left there. */
+    memset(pix, 0, (size_t)cd.size);
+
+    memset(&sp, 0, sizeof sp);
+    sp.plane_id = plane;
+    sp.crtc_id = crtc_id;
+    sp.fb_id = fc.fb_id;
+    sp.crtc_w = (__u32)w;
+    sp.crtc_h = (__u32)h;
+    sp.src_w = (__u32)w << 16;
+    sp.src_h = (__u32)h << 16;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_SETPLANE, &sp) < 0) {
+        pointsrc_log("kms scanout: SETPLANE primary %u: %s -- staying on /dev/fb0",
+                     plane, strerror(errno));
+        return NULL;
+    }
+    *pitch_bytes = (int)cd.pitch;
+    g_scan.fd = fd;
+    g_scan.crtc_index = crtc_index;
+    pointsrc_log("kms scanout: crtc %u primary plane %u fb %u %dx%d %d bpp pitch %u"
+                 " at %p -- /dev/fb0 is no longer the screen",
+                 crtc_id, plane, fc.fb_id, w, h, bpp, cd.pitch, pix);
+    return pix;
+}
+
+__attribute__((visibility("default")))
+void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes)
+{
+    void *pix;
+
+    pthread_mutex_lock(&g_scan_lock);
+    if (!g_scan.tried) {
+        const char *e = getenv("KMS_SCANOUT");
+
+        g_scan.tried = 1;
+        if (e && *e == '1') {
+            g_scan.pix = scanout_setup(w, h, bpp, &g_scan.pitch_bytes);
+            g_scan.w = w;
+            g_scan.h = h;
+            g_scan.bpp = bpp;
+        }
+    }
+    pix = g_scan.pix;
+    /* One buffer, one geometry: a caller asking for another gets the fb0 route. */
+    if (pix && (w != g_scan.w || h != g_scan.h || bpp != g_scan.bpp))
+        pix = NULL;
+    if (pix && pitch_bytes)
+        *pitch_bytes = g_scan.pitch_bytes;
+    pthread_mutex_unlock(&g_scan_lock);
+    return pix;
+}
+
+/* Block until the scanout's CRTC starts its next vertical blank. With /dev/fb0
+ * the pace came from FBIOPAN_DISPLAY (fb_shim.c's pan pacer, a sleep); the KMS
+ * route does not pan, so the driver calls this before each present instead, and
+ * gets the panel's real clock rather than a sleep that drifts against it. Writing
+ * the frame top-down from the start of vblank also stays ahead of the scan (a
+ * present well under a frame), which is what keeps one buffer from tearing.
+ * -1 = no scanout or the wait failed: the caller presents anyway. */
+__attribute__((visibility("default")))
+int rx3_kms_vsync(void)
+{
+    struct {
+        __u32 type;
+        __u32 sequence;
+        unsigned long signal;      /* reply: tval_sec, tval_usec overlay these */
+        unsigned long pad;
+    } vbl;
+    unsigned int idx = g_scan.crtc_index;
+
+    if (g_scan.fd < 0)
+        return -1;
+    memset(&vbl, 0, sizeof vbl);
+    /* _DRM_VBLANK_RELATIVE, sequence 1 = the next one. CRTC 0 and 1 are the
+     * SECONDARY flag's job, 2+ go in the high-crtc field. */
+    vbl.type = 0x1;
+    if (idx == 1)
+        vbl.type |= 0x20000000;                /* _DRM_VBLANK_SECONDARY */
+    else if (idx > 1)
+        vbl.type |= (idx << 1) & 0x3e;         /* _DRM_VBLANK_HIGH_CRTC_SHIFT 1 */
+    vbl.sequence = 1;
+    return real_ioctl(g_scan.fd, _IOWR('d', 0x3a, vbl), &vbl) < 0 ? -1 : 0;
 }

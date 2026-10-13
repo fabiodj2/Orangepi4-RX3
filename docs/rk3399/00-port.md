@@ -98,9 +98,47 @@ only, no `__isoc23`/`*64`/`fstat`; every undefined symbol of `fbshim.so`
 resolves in the chroot's libc/libpthread/libm/libdl/librt; every address in
 `scripts/shims/rbp_abi.h` checked lands on the same-named symbol in our rbp.
 
+## The display path: KMS scanout, not /dev/fb0 (2026-10-13)
+
+**rockchip-drm's `/dev/fb0` is not the screen's memory.** Its framebuffer has a
+`dirty()` hook, so fbdev emulation hands out a vmalloc shadow with deferred I/O:
+each page written faults, and a kernel worker copies the damage to the real
+buffer on its own clock. Measured from rbp: **35,770 minor faults/s**, the fb0
+mapping all `Private_Dirty` pages with no `VM_PFNMAP`, a 565→8888 scale at
+15.6 ms (the Pi: 3.3 ms), `skip=2`, torn frames and flicker on every touch.
+Pinning rbp to the A72s changed nothing (17.7 ms): it was never the CPU.
+
+The fix moves the picture onto KMS and leaves fb0 out of it:
+
+| Piece | Where | What |
+|---|---|---|
+| `rx3_kms_scanout()` | `scripts/shims/drmband.c` | dumb buffer of the fb's geometry on the **primary** plane of the live CRTC, through the same device holder (and DRM master) the overlay bands use; `KMS_SCANOUT=1` |
+| `rx3_kms_vsync()` | same | `DRM_IOCTL_WAIT_VBLANK` on that CRTC: the pace the fb route got from the pan pacer |
+| page painters | `menu_draw.c`, `fb_cursor.c` | draw on the scanout instead of fb0 when there is one |
+| present | `tools/build-directfb/rk3399-kms-scanout.diff` | `fbdev.c` finds both with `dlsym`, waits for vblank, presents into the scanout, does not pan; plus a fast 565→8888 scaler (64 K LUT, per-geometry column table, each source row converted once and `memcpy`'d out to write-combined memory). `DFB_PRESENT_SLOW=1` = the old walk |
+| card | `DRM_BAND_CARD` | `/dev/dri/card0` here (rockchip-drm); card1 is panfrost, no CRTC. The Pi's card1 stays the default |
+
+Result, same unit: `PRESENT: 300 presented / 300 flips, avg 5.00 ms, worst
+14.54 ms, skip 1`; 0 faults/s; gui_task 54% → 37%; no flicker. Overlay bands
+(menu `plane 40`) stay above the picture (`plane 33`, primary).
+
+**rbp itself paces at 30 fps**: its render thread `nanosleep`s to a ~33 ms frame
+(strace: sleep ~9.3 ms, then FBIO_WAITFORVSYNC, which is ENOTTY here and returns at
+once). So the panel now gets a steady 30 fps, every frame held exactly two vblanks;
+before, `skip=2` halved that to ~15 and deferred I/O made it irregular.
+
+Build note: the module is linked with `LIBS="-ldl -lpthread"` (a bare `LIBS=`
+drops libtool's `-lpthread`), and then the soname fix-up — skipping it gives
+`libdirect-1.4.so.6: cannot open shared object file` and rbp exits at
+`DS_HW_Glib3_DFB.c <293>`.
+
+Back-out without rebuilding: `RB_KMS_SCANOUT=0 RB_DFB_PRESENT_SKIP=` (the old
+route, measured above). The pre-change binaries are kept beside the new ones as
+`*.pre-kms` in the runtime.
+
 ## Open
 
-* `menu plane: open /dev/dri/card1` — the Pi's vc4 scanout node. Here it is
-  `/dev/dri/card0`, not bound into the chroot; the top menu falls back to
-  drawing on the fb page (flicker-prone, rbpi4b docs/07 "The flicker").
+* rbp's 30 fps frame limiter: 60 would need its frame period found in the binary.
+* Overlay bands vs. KMS: the effect picker and the drawers can now get planes;
+  BEAT FX / CUE POINT mix still to be re-checked with them.
 * Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.

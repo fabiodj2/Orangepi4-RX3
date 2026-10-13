@@ -1,0 +1,189 @@
+--- a/systems/fbdev/fbdev.c
++++ b/systems/fbdev/fbdev.c
+@@ -58,6 +58,8 @@
+ #include <fusion/reactor.h>
+ #include <fusion/shmalloc.h>
+ 
++#include <dlfcn.h>
++
+ #include <directfb.h>
+ 
+ #include <core/core.h>
+@@ -274,6 +276,70 @@
+  *     (dw - 1/2) * floor((sw<<16)/dw)  <  (dw - 1/2) * (sw<<16)/dw  <  sw<<16
+  * so there is no clamp in the inner loop and none is needed.
+  */
++/*
++ * 565 -> 8888, fast. The per-pixel walk below costs ~10.8 ms at 1728x1080 into a
++ * write-combined KMS buffer on the RK3399; this does the same picture with:
++ *   - a 64 K-entry conversion table (256 KB, built once, stays in L2);
++ *   - the source column of every output pixel computed once per geometry;
++ *   - each SOURCE row converted once, into a cached row buffer, and every output
++ *     row that samples it (800 -> 1080 repeats ~1 in 3) copied out with memcpy,
++ *     which is what write-combined memory wants: long sequential bursts.
++ * Same sampling as the walk (stepx/stepy, half-step origin), so the same pixels.
++ * Returns 0 if it could not allocate, and the caller walks instead.
++ */
++static int
++fbdev_present_scale_565_8888( const unsigned char *src, int sw, int sh, int spitch,
++                              unsigned char *dst, int fpitch, int dx, int dy, int dw, int dh )
++{
++     static unsigned int *lut;
++     static unsigned int *row;
++     static int          *xi;
++     static int           xi_dw = -1, xi_sw = -1;
++     unsigned int stepx = (unsigned int)(((unsigned long long)sw << 16) / (unsigned)dw);
++     unsigned int stepy = (unsigned int)(((unsigned long long)sh << 16) / (unsigned)dh);
++     unsigned int accy  = stepy >> 1;
++     int          last  = -1;
++     int          x, y;
++
++     if (!lut) {
++          lut = malloc( 65536 * sizeof *lut );
++          if (!lut)
++               return 0;
++          for (x = 0; x < 65536; x++)
++               lut[x] = rgb565_to_rgb32( (unsigned short)x );
++     }
++     if (xi_dw != dw || xi_sw != sw) {
++          unsigned int acc = stepx >> 1;
++
++          free( xi );
++          free( row );
++          xi  = malloc( (size_t)dw * sizeof *xi );
++          row = malloc( (size_t)dw * sizeof *row );
++          if (!xi || !row) {
++               free( xi ); free( row ); xi = NULL; row = NULL; xi_dw = -1;
++               return 0;
++          }
++          for (x = 0; x < dw; x++, acc += stepx)
++               xi[x] = (int)(acc >> 16);
++          xi_dw = dw;
++          xi_sw = sw;
++     }
++
++     for (y = 0; y < dh; y++, accy += stepy) {
++          int sy = (int)(accy >> 16);
++
++          if (sy != last) {
++               const unsigned short *s = (const unsigned short *)(src + (size_t)sy * spitch);
++
++               for (x = 0; x < dw; x++)
++                    row[x] = lut[s[xi[x]]];
++               last = sy;
++          }
++          memcpy( dst + (size_t)(y + dy) * fpitch + (size_t)dx * 4, row, (size_t)dw * 4 );
++     }
++     return 1;
++}
++
+ static void
+ fbdev_present_scale( const unsigned char *src, int sw, int sh, int spitch, int sbpp,
+                      unsigned char *dst, int fpitch, int dbpp,
+@@ -284,6 +350,14 @@
+      unsigned int accy  = stepy >> 1;
+      int          y;
+ 
++     static int slow = -1;
++
++     if (slow < 0)
++          slow = getenv( "DFB_PRESENT_SLOW" ) != NULL;
++     if (sbpp == 2 && dbpp == 4 && !slow &&
++         fbdev_present_scale_565_8888( src, sw, sh, spitch, dst, fpitch, dx, dy, dw, dh ))
++          return;
++
+      for (y = 0; y < dh; y++) {
+           const unsigned char *srow = src + (size_t)(accy >> 16) * spitch;
+           unsigned char       *drow = dst + (size_t)(y + dy) * fpitch + (size_t)dx * dbpp;
+@@ -2316,6 +2390,43 @@
+      return DFB_OK;
+ }
+ 
++/*
++ * THE KMS SCANOUT, when the preloaded shim offers one (fbshim's drmband.c,
++ * rx3_kms_scanout, behind KMS_SCANOUT=1). On a board whose /dev/fb0 is a
++ * deferred-I/O shadow -- rockchip-drm on the RK3399 -- every write to the fb
++ * mapping faults and the kernel copies the damage to the real buffer on its own
++ * clock, which made a 565->8888 scale cost 15.6 ms here against the Pi's 3.3 ms
++ * and tore frames. The shim puts a dumb buffer of the fb's geometry on the
++ * primary plane; the present writes there instead, and does not pan (the plane
++ * is not the fb). Looked up once; NULL = the fb route, unchanged.
++ */
++static int (*kms_vsync)( void );
++
++static unsigned char *
++fbdev_kms_scanout( int fw, int fh, int dbpp, int *fpitch )
++{
++     static int            looked;
++     static unsigned char *pix;
++     static int            pitch;
++
++     if (!looked) {
++          void *(*fn)( int, int, int, int * );
++
++          looked = 1;
++          fn = (void *(*)( int, int, int, int * )) dlsym( RTLD_DEFAULT, "rx3_kms_scanout" );
++          if (fn)
++               pix = fn( fw, fh, dbpp * 8, &pitch );
++          if (pix && !getenv( "KMS_NO_VSYNC" ))
++               kms_vsync = (int (*)( void )) dlsym( RTLD_DEFAULT, "rx3_kms_vsync" );
++          if (pix)
++               D_INFO( "FBDev/Present: KMS scanout %dx%d pitch %d -- presenting there, "
++                       "not to /dev/fb0\n", fw, fh, pitch );
++     }
++     if (pix)
++          *fpitch = pitch;
++     return pix;
++}
++
+ static DFBResult
+ primaryFlipRegion( CoreLayer             *layer,
+                    void                  *driver_data,
+@@ -2376,10 +2487,26 @@
+                long long t0 = (shared->present_mode == PRESENT_SCALE)
+                               ? direct_clock_get_micros() : 0;
+ 
++               int            kpitch = 0;
++               unsigned char *kms    = fbdev_kms_scanout( fw, fh,
++                                                          shared->present_dst_bpp,
++                                                          &kpitch );
++
++               /* The KMS route's pace: the panel's own vblank, in place of the
++                  pan pacer the fb route gets from FBIOPAN_DISPLAY. Waited for
++                  before the blit and outside the timed window, so the PRESENT
++                  line still measures the blit alone. */
++               if (kms && kms_vsync)
++                    kms_vsync();
++               if (kms)
++                    t0 = direct_clock_get_micros();
++
+                fbdev_present_primary( (unsigned char*)shared->rot_surface + lock->offset,
+                                       sw, sh, spitch, shared->rot_src_bpp,
+-                                      dfb_fbdev->framebuffer_base + idx * fh * fpitch,
+-                                      fw, fh, fpitch, shared->present_dst_bpp,
++                                      kms ? kms
++                                          : dfb_fbdev->framebuffer_base + idx * fh * fpitch,
++                                      fw, fh, kms ? kpitch : fpitch,
++                                      shared->present_dst_bpp,
+                                       shared->present_mode, shared->rot_deg,
+                                       shared->present_dx, shared->present_dy,
+                                       shared->present_dw, shared->present_dh );
+@@ -2400,11 +2527,13 @@
+                     }
+                }
+ 
+-               ret = dfb_fbdev_pan( config->source.x,
+-                                    shared->present_pan ? idx * fh + config->source.y : 0,
+-                                    (flags & DSFLIP_WAITFORSYNC) == DSFLIP_ONSYNC );
+-               if (ret)
+-                    return ret;
++               if (!kms) {
++                    ret = dfb_fbdev_pan( config->source.x,
++                                         shared->present_pan ? idx * fh + config->source.y : 0,
++                                         (flags & DSFLIP_WAITFORSYNC) == DSFLIP_ONSYNC );
++                    if (ret)
++                         return ret;
++               }
+           }
+ 
+           /* The measured line, once, at the PRESENT_REPORT_ATth present.  This is

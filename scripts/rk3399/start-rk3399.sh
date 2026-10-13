@@ -68,6 +68,14 @@ mountpoint -q "$RUNTIME/dev/snd"   || mount --bind /dev/snd "$RUNTIME/dev/snd"
 mountpoint -q "$RUNTIME/dev/input" || mount --bind /dev/input "$RUNTIME/dev/input"
 [ -e "$RUNTIME/dev/fb0" ] || mknod "$RUNTIME/dev/fb0" c 29 0
 mountpoint -q "$RUNTIME/dev/fb0"   || mount --bind /dev/fb0 "$RUNTIME/dev/fb0"
+# The display's DRM node, for the shim's overlay planes (drmband.c: menu band,
+# drawers, effect picker). Here card0 is rockchip-drm and card1 is panfrost (no
+# CRTC) -- the reverse of the Pi's v3d/vc4 -- hence DRM_BAND_CARD below. Without
+# a plane those panels are painted on rbp's own page and rbp repaints over them.
+DRI_CARD=${RX3_DRI_CARD:-/dev/dri/card0}
+mkdir -p "$RUNTIME/dev/dri"
+[ -e "$RUNTIME$DRI_CARD" ] || touch "$RUNTIME$DRI_CARD"
+mountpoint -q "$RUNTIME$DRI_CARD" || mount --bind "$DRI_CARD" "$RUNTIME$DRI_CARD"
 
 # FIFOs still used: DDJ-400 bridge -> keyshim, and rbp's own control FIFO.
 # NOT the touch FIFO: fbshim's tscfake serves /dev/tsc2007_2-0048 itself.
@@ -106,11 +114,21 @@ nohup chroot "$RUNTIME" /lib/ld-linux.so.3 /usr/bin/edb_streamd \
 nohup "$DDJ" -v -f "$RUNTIME/tmp/rb-ctrl.fifo" \
     >"$LOGDIR/ddj400-bridge.log" 2>&1 </dev/null &
 
+# KMS_SCANOUT=1: rockchip-drm's /dev/fb0 is a deferred-I/O shadow (every page
+# write faults; the kernel copies to the real buffer on its own clock), so the
+# shim puts a dumb buffer on the primary plane and the driver presents there
+# (drmband.c rx3_kms_scanout, fbdev.c fbdev_kms_scanout). DFB_PRESENT_SKIP=1
+# because the pixel budget's skip=2 was sized for the slow route. Either at 0
+# (RB_KMS_SCANOUT=0, RB_DFB_PRESENT_SKIP=) puts back the measured old path.
 # FB_LIE_BPP=16 must agree with rbp's layer word at 0x1a3ab8 (RGB16 in our
 # binary); rbpi4b's patch-rbp-depth.py is the way to 32 (both or neither).
 # DFB_PRESENT unset = 'off', which the driver auto-upgrades to 'scale' on a fb
 # that is not 1280x800 -> aspect-fit 1728x1080 with 96 px bars.
-nohup chroot "$RUNTIME" env \
+# RX3_RBP_CPUS: CPU list for rbp and every thread it starts (taskset -c). The
+# RK3399 is big.LITTLE: cpu0-3 Cortex-A53 @1.4 GHz, cpu4-5 Cortex-A72 @1.8 GHz;
+# unpinned, gui_task (which draws and presents) wanders onto the A53s.
+CPUS=${RX3_RBP_CPUS:-}
+nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     PATH=/bin:/sbin:/usr/bin:/usr/sbin \
     DFBARGS="system=fbdev,mode=1280x800,pixelformat=RGB16,primary-only,no-hardware" \
     FB_LIE_BPP=16 \
@@ -121,6 +139,9 @@ nohup chroot "$RUNTIME" env \
     POINT_MENU="${RB_POINT_MENU:-1}" \
     POINT_FX_TOUCH="${RB_POINT_FX_TOUCH:-1}" \
     POINT_HOTCUE_TOUCH="${RB_POINT_HOTCUE_TOUCH:-1}" \
+    DRM_BAND_CARD="$DRI_CARD" \
+    KMS_SCANOUT="${RB_KMS_SCANOUT:-1}" \
+    DFB_PRESENT_SKIP="${RB_DFB_PRESENT_SKIP:-1}" \
     RX3_AUDIO_DEVICE='hw:CARD=DDJ400,DEV=0' \
     RX3_HP_GAIN_X="$HP_GAIN" \
     RX3_KEYSHIFT=1 \

@@ -34,6 +34,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <string.h>
+#include "drmband.h"
 #include <sys/mman.h>          /* PROT_READ/PROT_WRITE/MAP_SHARED for real_mmap */
 #include <unistd.h>
 
@@ -156,6 +157,20 @@ static int map_fb(struct cursor_state *s, const char *dev, int loud)
         if (loud)
             pointsrc_log("cursor: mmap %s (%ld bytes): %s\n", dev, len, strerror(errno));
         return -1;
+    }
+
+    /* Where the screen really is: on a board whose /dev/fb0 is a deferred-I/O
+     * shadow the picture is on the KMS scanout (drmband.c), and a mark painted on
+     * fb0 would never be seen. Same geometry and format; only the pointer and
+     * the pitch can differ. */
+    {
+        int pb = 0;
+        void *k = rx3_kms_scanout(s->fb_w, s->fb_h, s->bpp, &pb);
+
+        if (k && pb > 0) {
+            s->pix = k;
+            s->pitch = pb / (s->bpp / 8);
+        }
     }
 
     /* The rectangle the present path blits the UI into, so the arrow follows the

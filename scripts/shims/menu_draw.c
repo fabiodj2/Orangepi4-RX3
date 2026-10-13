@@ -2333,6 +2333,20 @@ static int menu_fb_open_unlocked(int loud)
         return -1;
     }
 
+    /* Where the screen really is: on a board whose /dev/fb0 is a deferred-I/O
+     * shadow the picture is on the KMS scanout (drmband.c), and a mark painted on
+     * fb0 would never be seen. Same geometry and format; only the pointer and
+     * the pitch can differ. */
+    {
+        int pb = 0;
+        void *k = rx3_kms_scanout(g.view.fb_w, g.view.fb_h, g.view.bpp, &pb);
+
+        if (k && pb > 0) {
+            g.view.pix = k;
+            g.view.pitch = pb / (g.view.bpp / 8);
+        }
+    }
+
     /* The rectangle the present path blits the UI into -- point_fit()'s rule, the
      * same one fb_cursor.c uses for the arrow, and the identity on a framebuffer
      * that is already 1280x800. DFB_PRESENT_FIT is the one policy in it: under

@@ -258,4 +258,15 @@ void drm_band_hide(struct drm_band *b);
  * drawer closing leaves the other drawer's plane on the glass. */
 void drm_band_teardown(struct drm_band *b);
 
+/* The whole picture on a dumb buffer on the primary plane, for a board whose
+ * /dev/fb0 is a deferred-I/O shadow (RK3399). Off unless KMS_SCANOUT=1; set up
+ * once, by whoever asks first, and held for the process's life. Returns the
+ * mapping and its pitch in bytes, or NULL for "use /dev/fb0" (off, failed, or a
+ * geometry other than the one first asked for). Exported: fbdev.c finds it with
+ * dlsym(RTLD_DEFAULT, "rx3_kms_scanout"). See drmband.c. */
+void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes);
+
+/* Wait for the scanout CRTC's next vblank; -1 when there is no scanout. */
+int rx3_kms_vsync(void);
+
 #endif /* RBPI4B_DRMBAND_H */
