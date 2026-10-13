@@ -157,6 +157,25 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     >"$LOGDIR/rbp.log" 2>&1 </dev/null &
 RBP_PID=$!
 
+# gui_task (draw + present) on the A72s. The audioshim swallows rbp's own
+# affinity/priority calls (stick_this_thread_to_core would pick cores 1/3, which
+# here are A53s), so every thread floats over 0-5; a frame drawn on an A53 misses
+# vblank. Measured over 30 s: unpinned 57.4 fps avg, worst second 42, 9 seconds
+# under 57; pinned 59.9 avg, worst 58, none under 57. RX3_GUI_CPUS= to skip.
+GUI_CPUS=${RX3_GUI_CPUS-4,5}
+if [ -n "$GUI_CPUS" ]; then
+    for i in $(seq 1 40); do
+        T=$(ps -L -o tid=,comm= -p "$RBP_PID" 2>/dev/null | awk '$2=="gui_task"{print $1; exit}')
+        [ -n "$T" ] && break
+        sleep 0.5
+    done
+    if [ -n "$T" ] && taskset -pc "$GUI_CPUS" "$T" >/dev/null; then
+        echo "gui_task $T pinned to cpus $GUI_CPUS"
+    else
+        echo "gui_task not found: left unpinned" >&2
+    fi
+fi
+
 sleep 8
 env RX3_RUNTIME="$RUNTIME" USBWATCH_SEG="$USB_SEG" sh "$WATCHER" start
 sleep 4

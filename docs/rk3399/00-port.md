@@ -133,6 +133,15 @@ load (`fb_shim.c rbp_frame_limiter_patch`; `e3530dfa`/`e2630dfa` →
 `e3530ffa`/`e2630ffa`, only if the words match v1.20), leaving vblank as the only
 pace. The binary on disk is untouched.
 
+**gui_task on the A72s.** The audioshim answers rbp's affinity/priority calls
+with success and does nothing, so every rbp thread floats over cpus 0-5 at
+SCHED_OTHER; a frame drawn on an A53 (cpu0-3) misses vblank. Reading the scanout
+through DRM GETFB/MAP_DUMB showed the stutter: 16.7 ms frames with bursts of 33 ms,
+and a waveform step that alternates 3/4 px (rbp's own 2/3 px at 1280, not ours).
+The launcher pins gui_task to `RX3_GUI_CPUS` (default `4,5`). 30 s each, rbp's
+`FB_VSYNC_RATE` counter: unpinned avg 57.4 fps, worst second 42, 9 seconds under
+57; pinned avg 59.9, worst 58, none under 57.
+
 Measured with `FB_VSYNC_RATE=1`: 60.0/s in most seconds, 58-60 in the rest;
 `avg 4.21 ms, worst 15.34 ms, skip 1`; gui_task ~72% (twice the frames), system
 ~70% idle; no audio xruns.
