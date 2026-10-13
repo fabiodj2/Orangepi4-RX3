@@ -221,6 +221,12 @@ static int  fx_touch = 1;
  * sets POINT_HOTCUE_TOUCH=0 and gets exactly that. Off means the sixteen reports this
  * module would have taken go to rbp untouched, byte for byte. */
 static int  hc_touch = 1;
+/* Touch on the pad strip while it shows STATUS (the pads): off by default, the
+ * operator's call of 2026-10-13 ("retirar o touch da parte de STATUS e deixar apenas
+ * para BEATFX"). Off, every gesture that STARTS on the strip (y STRIP_Y0..STRIP_Y1)
+ * while strip_page() reads the pads is swallowed whole -- no HOT CUE row, no rbp
+ * pad-mode change from the caption. POINT_STATUS_TOUCH=1 gives both back. */
+static int  status_touch = 0;
 static int  menu_mouse = 0;
 
 /* The buttons' keycodes, in menu_zone.c's column order: the first six are rbp's own
@@ -1275,18 +1281,18 @@ static int strip_shows_pads(void)
     return strip_page() == 0;
 }
 
-/* THE PAD-MODE BAND UNDER THE BEAT FX PAGE. rbp's STATUS page changes a deck's pad
- * mode when its caption row is touched (HOT CUE -> GATE CUE -> BEAT LOOP ...), and that
- * hit zone stays live when the strip shows BEAT FX BANK + X-PAD instead: measured
- * 2026-10-13, on the BEAT FX page a tap at y 508 and at y 517 over the X-PAD flipped
- * the strip back to the pads AND moved deck 2's pad mode, while every tap from y 529
- * down did what the button says. So on that page only, a report in the band is moved
- * down to the middle row of the same buttons (bank boxes y 517..553, X-PAD 512..558):
- * the finger still presses the button it was aimed at, and rbp's pad-mode zone never
- * sees it. On the pads page, or when the page cannot be read, nothing is moved. */
+/* RBP'S STATUS CONTROLS STAY LIVE UNDER THE BEAT FX PAGE. Drawing the BEAT FX BANK +
+ * X-PAD over the strip does not take rbp's own STATUS hit rects away: measured
+ * 2026-10-13, on the BEAT FX page a tap at y 508/517 changed a deck's pad mode (the
+ * caption) and taps on FLANGER/ECHO/VINYL BRAKE/DELAY at y ~526 also fired that
+ * deck's hot cue (the waveform jumped; no shim line -- rbp's own pad cell). So every
+ * report on the strip, on that page only, goes to y STRIP_BUTTON_ROW_Y: the gutter
+ * between the two pad rows, inside the same bank/X-PAD button the finger is on, so
+ * the button still fires and no hidden STATUS control does. Pads page or unknown
+ * page: nothing is moved. */
 static int strip_bfx_y(int y)
 {
-    if (y >= STRIP_PADMODE_Y0 && y <= STRIP_PADMODE_Y1 && rbp_perf_screen() &&
+    if (y >= STRIP_Y0 && y <= STRIP_Y1 && rbp_perf_screen() &&
         strip_page() == 1)
         return STRIP_BUTTON_ROW_Y;
     return y;
@@ -1559,6 +1565,23 @@ static void side_replay_tap(int side)
     int dwell_ms = env_int("POINT_MENU_TAP_MS", POINT_MENU_TAP_DEFAULT_MS);
 
     side_tap_point(side, &tx, &ty);
+    /* The entry columns overlap the pad strip's ends, and a replay is a press rbp
+     * sees, so it obeys the strip's rules like a forwarded report: dropped on the
+     * STATUS page while that page is dead to touch, moved into the button row on the
+     * BEAT FX page. Without this the corners of the strip reached rbp's hidden
+     * pad-mode caption on both pages (2026-10-13: deck 2 BEAT JUMP <-> 3 from the
+     * right column, deck 1 0 <-> 4 from the left). */
+    if (ty >= STRIP_Y0 && ty <= STRIP_Y1 && rbp_perf_screen()) {
+        int pg = strip_page();
+
+        if (pg == 0 && !status_touch) {
+            pointsrc_log("pointsrc: side %s edge tap at (%d,%d) is on the STATUS strip"
+                         " -> not replayed (POINT_STATUS_TOUCH=0)",
+                         side ? "right" : "left", tx, ty);
+            return;
+        }
+        ty = strip_bfx_y(ty);
+    }
     pointsrc_log("pointsrc: side %s edge tap at (%d,%d) is not a swipe or a button"
                  " -> replayed to rbp as a press (held %dms)",
                  side ? "right" : "left", tx, ty, dwell_ms);
@@ -1868,11 +1891,25 @@ static void side_log_transitions(void)
  * release, which is where a menu button fires and where the tap/hold split is
  * decided. The drawers have no hold of their own: a transport key has no second
  * meaning, so `held_ms` is not passed on. */
+static int status_latched;   /* a STATUS-strip gesture is being swallowed (below) */
+
 static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
 {
+    static int last_down;
+    int was_down = last_down;
     int button = 0;
     int verdict = MZ_FEED_NONE;
     int side = -1, sact = SZ_ACT_NONE, svalue = 0;
+
+    /* A gesture the STATUS-strip rung (further down) took on its press is swallowed
+     * here, first, until its release -- before any other surface can see a move or
+     * an up of it. was_down is every report's predecessor, whoever took it. */
+    last_down = down;
+    if (status_latched) {
+        if (!down)
+            status_latched = 0;
+        return;
+    }
 
     /* THE USB STOP CHOOSER FIRST, before everything else including the waveform
      * swipe, and unconditionally -- not behind `allow_menu`. While the box is up it
@@ -1976,6 +2013,40 @@ static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
 
     if (verdict == MZ_FEED_NONE && allow_menu)
         verdict = menu_feed(down, x, y, &button);
+
+    /* THE BEAT FX BANK IS SHIM-DRIVEN. rbp's STATUS pads stay live under the BEAT FX
+     * page (strip_bfx_y()'s comment): a tap rbp sees on FLANGER also fires deck 1's hot
+     * cue A, and no y inside that box misses the hidden pad -- FLANGER lies wholly over
+     * pad A, and moving the tap to the gutter between the pad rows still fired it
+     * (measured with both decks paused, 2026-10-13). So on that page a press on any of
+     * the four slots is withheld from rbp, gesture and all (status_latched), and the
+     * shim selects the slot's effect itself: rbp's own UiGetMixBeatFXBank(slot) gives
+     * the switch position and K_BFXTYPE carries it -- the effect picker's proven path.
+     * Asked BEFORE the drawers' entry column, which used to take the left of FLANGER
+     * and replay it to rbp unmoved. An open drawer, the band or the window still come
+     * first; the trash icon's delete mode, an empty or unreadable slot, or any other
+     * page leave the tap to the rungs below, as before. */
+    if (verdict == MZ_FEED_NONE && down && !was_down && rbp_perf_screen() &&
+        y >= STRIP_Y0 && y <= STRIP_Y1 && x >= BFX_BANK_X0 && x <= BFX_BANK_X1 &&
+        !menu_window_is_open() && !menu_is_open() && !side_any_open() &&
+        strip_page() == 1 &&
+        ((int (*)(void))UI_GET_BFX_BANK_DELMODE)() == 0) {
+        int slot = (x - BFX_BANK_X0) / BFX_BANK_PITCH;
+        int pos;
+
+        if (slot > 3)
+            slot = 3;
+        pos = ((int (*)(int))UI_GET_MIX_BFX_BANK)(slot);
+        if (pos >= 0 && pos < BFX_TYPE_POSITIONS) {
+            status_latched = 1;
+            pointsrc_log("pointsrc: beat fx bank slot %d at (%d,%d) -> type position %d"
+                         " (rbp did not see the tap)", slot + 1, x, y, pos);
+            fx_type_send(pos);
+            return;
+        }
+        pointsrc_log("pointsrc: beat fx bank slot %d at (%d,%d): no position (%d),"
+                     " left to rbp", slot + 1, x, y, pos);
+    }
 
     if (verdict == MZ_FEED_NONE && allow_menu && !menu_window_is_open())
         verdict = side_feed_any(SZ_PTR_MAIN, down, x, y, &side, &sact, &svalue);
@@ -2083,6 +2154,26 @@ static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
                 }
                 return;
             }
+        }
+    }
+
+    /* THE STATUS PAGE OF THE PAD STRIP IS DEAD TO TOUCH (status_touch off). Asked
+     * after the band, the drawers and the BEAT FX panel, which are drawn over or beside
+     * the strip and keep first refusal; before the HOT CUE row, which it replaces.
+     * The decision is made once, on the press, and the whole gesture follows it: a
+     * press withheld from rbp must have its moves and its release withheld too, or rbp
+     * is handed an up for a down it never saw. A press only latches from the up state,
+     * so a finger that slides onto the strip from elsewhere stays rbp's. An unknown
+     * page (-1) is not the pads, so the strip is left alone then. */
+    {
+        if (verdict == MZ_FEED_NONE && !status_touch && down && !was_down &&
+            y >= STRIP_Y0 && y <= STRIP_Y1 && rbp_perf_screen() &&
+            !menu_window_is_open() && !menu_is_open() && !side_any_open() &&
+            strip_page() == 0) {
+            status_latched = 1;
+            pointsrc_log("pointsrc: STATUS strip tap at (%d,%d) ignored"
+                         " (POINT_STATUS_TOUCH=0)", x, y);
+            return;
         }
     }
 
@@ -2807,6 +2898,7 @@ int pointsrc_start(void)
      * rather than a shim surface. Off means rbp's stream is untouched at those sixteen
      * cells, byte for byte. */
     hc_touch = env_flag("POINT_HOTCUE_TOUCH", 1);
+    status_touch = env_flag("POINT_STATUS_TOUCH", 0);
     /* menu_key_eff is built even when the menu is off, so the log states the
      * table it would use rather than staying silent about a knob that was set. */
     menu_keys_init();

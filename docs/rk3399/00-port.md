@@ -258,6 +258,30 @@ the best .bss-diff candidate (a Winscape window field, 1770/1771 over 90 s) late
 STATUS under a drawn BEAT FX page and let cue B fire for two taps on ECHO. rbp_abi.h
 keeps that record.
 
+**Follow-up the same day -- rbp's STATUS controls are live under the BEAT FX page,
+so the page is driven from the shim, not by moving taps around:**
+
+* *STATUS page is dead to touch* (`POINT_STATUS_TOUCH`, default 0, the operator's
+  call): a gesture that starts on the strip (y 486..575; rbp's caption zone answers
+  from ~492, above the drawn 495) while the pads are drawn is swallowed whole -- no
+  HOT CUE row, no pad-mode change. `POINT_STATUS_TOUCH=1` restores both.
+* *The BEAT FX BANK is shim-driven*: on the BEAT FX page a press on any of the four
+  slots is withheld from rbp and the shim selects the slot's effect itself --
+  `UiGetMixBeatFXBank(slot)` @0xfe664 (rbp's own read in PlayInfoDataUpdate) gives the
+  switch position, `K_BFXTYPE` carries it (the picker's path). Needed because a tap
+  rbp sees on FLANGER also fires deck 1's hot cue A from the hidden pad under it, and
+  no y in that box misses the pad (moving to the gutter between the pad rows, y 542,
+  still fired it with both decks paused). Off in the trash icon's delete mode.
+* *Other BEAT FX taps on the strip* (X-PAD, trash) go to rbp at y 542.
+* *The drawers' entry columns* (x < 56, x > ~1224) used to replay a tap to rbp
+  unmoved, reaching the hidden caption from the strip's corners on both pages; a
+  replay that lands on the strip now obeys the same rules (dropped on STATUS, moved
+  on BEAT FX).
+
+Verified: STATUS strip and its corners ignored; all four bank slots select their
+effect with the decks paused and no waveform jump. BEAT FX page corners after the
+last change: not yet re-tested on the glass.
+
 **Verified by the operator:** 7 toggles, all four bank buttons (top edge included),
 29 X-PAD taps -- no flip to pads, no pad-mode change, no cue; on STATUS the pad hot
 cue fires. Previous shim: `fbshim.so.pre-stripgate`.

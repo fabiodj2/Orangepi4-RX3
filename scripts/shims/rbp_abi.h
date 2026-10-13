@@ -762,11 +762,31 @@ static const signed char bfx_type_to_pos[15] = {
  *
  * None of these is the page; the page is the drawing. */
 
-/* rbp's pad-mode caption hit zone, still live under the BEAT FX page (pointsrc.c's
- * strip_bfx_y()): changed the mode at y 502..517, never from y 529 down. */
-#define STRIP_PADMODE_Y0        495
-#define STRIP_PADMODE_Y1        528
-#define STRIP_BUTTON_ROW_Y      536            /* middle of the bank / X-PAD buttons */
+/* The pad strip (both pages): drawn y 495..575 (the two Winscape windows' rect), but
+ * rbp's pad-mode caption answers a little above it -- a tap at y 492 moved deck 2's
+ * pad mode (2026-10-13) -- so the touch rules start at 486, below deck 2's beat ticks. */
+#define STRIP_Y0                486
+#define STRIP_Y1                575
+
+/* Where a BEAT FX page tap is sent (pointsrc.c's strip_bfx_y()): the gutter between
+ * the two hidden pad rows (cells y 518..537 and 548..567, hc_zone.h), which is still
+ * inside every bank box (y 517..553) and X-PAD cell (512..558). */
+#define STRIP_BUTTON_ROW_Y      542
+
+/* The BEAT FX BANK's four slots, as rbp's own code reads them (PlayInfoDataUpdate
+ * @0x131c2c calls this for slots 0..3 and compares each against the current type to
+ * light the box). UiGetMixBeatFXBank(slot) returns the slot's SWITCH POSITION, 0..13 --
+ * the same numbering K_BFXTYPE OP_VALUE takes (BFX_TYPE_POSITIONS) -- or -1 when the
+ * StatWatcher chain (UI_PADMODE_HOLDER_GLOBAL +0x38) is not built.
+ * UiGetBeatFXBankDeleteMode() is nonzero while the trash icon's delete mode is on. */
+#define UI_GET_MIX_BFX_BANK      0x000fe664
+#define UI_GET_BFX_BANK_DELMODE  0x000fe694
+/* The four drawn boxes, x ranges, measured off the scanout 2026-10-13 (FLANGER 19..148,
+ * ECHO 159..288, VINYL BRAKE 299..428, DELAY 439..568, all y 517..553); the shim's
+ * rects split the 10 px gaps so a finger between two boxes still picks one. */
+#define BFX_BANK_X0              11
+#define BFX_BANK_PITCH           140
+#define BFX_BANK_X1              573
 
 /* playengine::PlayEngine singleton + isLooping(EnPlayerChannel) (see the LED
  * section below, which defines these later in the file) */
