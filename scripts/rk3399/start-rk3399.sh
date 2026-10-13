@@ -32,6 +32,9 @@ USB_SEG=${USBWATCH_SEG:-/usb}
 # /dev/gpiodrv; memshim stays for the MAP_SHARED fd=-1 RTC mmap. keyshim must
 # stay: it is the DDJ-400's path into IKeyManager.
 PRELOAD=/root/pdj/librx3_core.so:/usr/lib/rbpi4b/fbshim.so:/usr/lib/memshim.so:/usr/lib/audioshim.so:/usr/lib/keyshim.so:/usr/lib/netshim.so
+# RX3_EXTRA_PRELOAD: diagnostic libraries appended for one run (e.g.
+# /usr/lib/rbpi4b/blittrace.so, tools/blittrace). Empty by default.
+PRELOAD="$PRELOAD${RX3_EXTRA_PRELOAD:+:$RX3_EXTRA_PRELOAD}"
 
 stop_all() {
     # The old launcher's stop knows every process and pattern of both setups

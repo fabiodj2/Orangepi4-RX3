@@ -181,6 +181,46 @@ bars itself -- the same rectangle the scaled route drew.
 Measured: 60.0 fps, worst second 59.9 (scaled route: worst 58). Picture and
 touch confirmed by the operator. `RB_KMS_MODE=` brings back the scaled route.
 
+## Garbage column right of the deck frames (2026-10-13): RESOLVED
+
+**Symptom.** A 1-px column of random coloured pixels just right of the
+selected-deck frame: x=183 beside the DECK 1/2 info panels, x=631 and x=1271
+beside the lower deck panels. Its colours changed every time the selection
+moved or the screen was redrawn, and once the selection moved away the column
+stayed on screen for good (rbp repaints the panel only up to x=182).
+
+**Ruled out.** The present path: `mode=convert` copies the whole frame 1:1, and
+the KMS buffer showed the same pixels as rbp's surface. Waveform scrolling: 25 s
+of playback recorded frame by frame, the column never changed.
+
+**Found with** `tools/blittrace` (LD_PRELOAD'ed for one run via
+`RX3_EXTRA_PRELOAD=/usr/lib/rbpi4b/blittrace.so`; interposes the `dfb_gfxcard_*`
+calls libdirectfb makes through its own PLT and logs any operation whose right
+edge lands on the suspect columns). The frame's right edge is
+`blit dst=1280x800 d=182,57 1x206 src=(1x206) bf=8` -- a 1-px-wide image with
+`DSBLIT_SRC_COLORKEY` -- and nothing else touches x=183.
+
+**Cause.** DirectFB's software blitter, `src/gfx/generic/template_colorkey_16.h`
+(`Bop_16_Kto_Aop` / `Bop_16_toK_Aop` and the 12/14/15-bit instances). `l` holds
+pixel count + 1 for the `while (--l)` loops, but the aligned path split it into
+pairs as if it were the count: `ceil(n/2)` pairs for odd n, or n/2 pairs plus the
+"odd" tail for even n. Every colorkeyed blit whose source and destination were
+both 4-byte aligned wrote one pixel past its right edge, taken from beyond the
+source row. A 1x206 source at x=182 (even, aligned) hits it on every row.
+
+**Fix.** `tools/build-directfb/rk3399-colorkey16-fix.diff`: `--l` before the pair
+split in both functions. Host test of the template over lengths 1-11, both
+alignments, both directions: original wrong in 88/176 cases, fixed 0/176. Built
+with the exact `F=` flags above (`make -C src CFLAGS="$F"`); without the patch
+that build is function-for-function identical to the installed library, with it
+only the `Bop_*_Kto_Aop`/`Bop_*_toK_Aop` sizes change. Then the README's soname
+fix-up (`--set-soname libdirectfb-1.4.so.0`, `--replace-needed` libdirect/
+libfusion `.so.6`→`.so.0`). Installed as `usr/lib/libdirectfb-1.4.so.0.0.0`;
+the previous one is `libdirectfb-1.4.so.0.0.0.pre-ckfix`.
+
+**Verified.** Columns 183/631 empty after the restart (1271: one corner pixel of
+the frame); operator switched deck selection and BROWSE and back: clean.
+
 ## Open
 
 * Overlay bands vs. KMS: the effect picker and the drawers can now get planes;
