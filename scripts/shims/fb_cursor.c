@@ -164,8 +164,16 @@ static int map_fb(struct cursor_state *s, const char *dev, int loud)
      * fb0 would never be seen. Same geometry and format; only the pointer and
      * the pitch can differ. */
     {
-        int pb = 0;
-        void *k = rx3_kms_scanout(s->fb_w, s->fb_h, s->bpp, &pb);
+        int pb = 0, kw, kh;
+        void *k;
+
+        /* KMS_MODE: the screen is the mode's size (1280x800 here, rbp's own),
+         * and the picture fills it -- the fit below then comes out the identity. */
+        if (rx3_kms_mode_geom(&kw, &kh)) {
+            s->fb_w = kw;
+            s->fb_h = kh;
+        }
+        k = rx3_kms_scanout(s->fb_w, s->fb_h, s->bpp, &pb);
 
         if (k && pb > 0) {
             s->pix = k;

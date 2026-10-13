@@ -2338,8 +2338,16 @@ static int menu_fb_open_unlocked(int loud)
      * fb0 would never be seen. Same geometry and format; only the pointer and
      * the pitch can differ. */
     {
-        int pb = 0;
-        void *k = rx3_kms_scanout(g.view.fb_w, g.view.fb_h, g.view.bpp, &pb);
+        int pb = 0, kw, kh;
+        void *k;
+
+        /* KMS_MODE: the screen is the mode's size (1280x800 here, rbp's own),
+         * and the picture fills it -- the fit below then comes out the identity. */
+        if (rx3_kms_mode_geom(&kw, &kh)) {
+            g.view.fb_w = kw;
+            g.view.fb_h = kh;
+        }
+        k = rx3_kms_scanout(g.view.fb_w, g.view.fb_h, g.view.bpp, &pb);
 
         if (k && pb > 0) {
             g.view.pix = k;

@@ -269,4 +269,7 @@ void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes);
 /* Wait for the scanout CRTC's next vblank; -1 when there is no scanout. */
 int rx3_kms_vsync(void);
 
+/* KMS_MODE's WxH, 1 if set: the screen's size for the page painters. */
+int rx3_kms_mode_geom(int *w, int *h);
+
 #endif /* RBPI4B_DRMBAND_H */

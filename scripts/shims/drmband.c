@@ -31,6 +31,7 @@
 #include "pointsrc.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -613,6 +614,123 @@ static int primary_on(int fd, unsigned int crtc_id, unsigned int *plane)
     return -1;
 }
 
+
+/* ---- KMS_MODE: put a mode on the CRTC instead of keeping fbcon's ----------
+ *
+ * For the "no scaling at all" experiment: KMS_MODE=1280x800 makes the scanout a
+ * 1280x800 buffer and programs the HDMI with a CVT 1280x800@60 mode (83.5 MHz,
+ * or the reduced-blanking 71 MHz one with KMS_MODE_RB=1), so rbp's frame goes
+ * out 1:1 and the MONITOR does whatever scaling it does. This monitor's EDID
+ * does not list 1280x800, so it may refuse it; the kernel puts fbcon's mode back
+ * when the process exits either way. */
+#define DRM_IOCTL_MODE_SETCRTC_      DRM_IOWR(0xA2, struct drm_mode_crtc)
+struct drm_mode_get_connector_ {
+    __u64 encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
+    __u32 count_modes, count_props, count_encoders;
+    __u32 encoder_id, connector_id, connector_type, connector_type_id;
+    __u32 connection, mm_width, mm_height, subpixel, pad;
+};
+#define DRM_IOCTL_MODE_GETCONNECTOR_ DRM_IOWR(0xA7, struct drm_mode_get_connector_)
+
+static int connected_connector(int fd, unsigned int *out)
+{
+    struct drm_mode_card_res res;
+    unsigned int *ids, i, n;
+
+    memset(&res, 0, sizeof res);
+    if (real_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0 || !res.count_connectors)
+        return -1;
+    n = res.count_connectors;
+    ids = calloc(n, sizeof *ids);
+    if (!ids)
+        return -1;
+    memset(&res, 0, sizeof res);
+    res.connector_id_ptr = (__u64)(uintptr_t)ids;
+    res.count_connectors = n;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0) {
+        free(ids);
+        return -1;
+    }
+    for (i = 0; i < n; i++) {
+        struct drm_mode_get_connector_ gc;
+
+        memset(&gc, 0, sizeof gc);
+        gc.connector_id = ids[i];
+        if (real_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR_, &gc) == 0 && gc.connection == 1) {
+            *out = ids[i];
+            free(ids);
+            return 0;
+        }
+    }
+    free(ids);
+    return -1;
+}
+
+static int kms_mode_wanted(int w, int h)
+{
+    const char *e = getenv("KMS_MODE");
+    int mw = 0, mh = 0;
+
+    return e && sscanf(e, "%dx%d", &mw, &mh) == 2 && mw == w && mh == h;
+}
+
+static int kms_set_mode(int fd, unsigned int crtc_id, unsigned int fb_id, int w, int h)
+{
+    struct drm_mode_crtc c;
+    struct drm_mode_modeinfo *m = &c.mode;
+    unsigned int conn;
+    const char *rb = getenv("KMS_MODE_RB");
+
+    if (w != 1280 || h != 800) {
+        pointsrc_log("kms mode: only 1280x800 has timings here, not %dx%d", w, h);
+        return -1;
+    }
+    if (connected_connector(fd, &conn) != 0) {
+        pointsrc_log("kms mode: no connected connector");
+        return -1;
+    }
+    memset(&c, 0, sizeof c);
+    if (!rb || !*rb || *rb == '2') {
+        /* 74.25 MHz -- a clock the RK3399's HDMI is known to take (this monitor's
+         * own 1280x720 runs on it; dw-hdmi-rockchip refuses any pixel clock the
+         * PLL cannot hit within 0.1%, and CVT's 83.5 MHz was refused). CVT-RB
+         * porches, htotal stretched to 1504: 74.25e6/(1504*823) = 59.99 Hz. */
+        m->clock = 74250;
+        m->hdisplay = 1280; m->hsync_start = 1328; m->hsync_end = 1360; m->htotal = 1504;
+        m->vdisplay = 800;  m->vsync_start = 803;  m->vsync_end = 809;  m->vtotal = 823;
+        m->flags = 0x1 | 0x8;      /* PHSYNC | NVSYNC */
+    } else if (*rb == '1') {       /* CVT-RB 1280x800@60: 71.00 MHz, +h -v */
+        m->clock = 71000;
+        m->hdisplay = 1280; m->hsync_start = 1328; m->hsync_end = 1360; m->htotal = 1440;
+        m->vdisplay = 800;  m->vsync_start = 803;  m->vsync_end = 809;  m->vtotal = 823;
+        m->flags = 0x1 | 0x8;      /* PHSYNC | NVSYNC */
+    } else {                       /* CVT 1280x800@60: 83.50 MHz, -h +v */
+        m->clock = 83500;
+        m->hdisplay = 1280; m->hsync_start = 1352; m->hsync_end = 1480; m->htotal = 1680;
+        m->vdisplay = 800;  m->vsync_start = 803;  m->vsync_end = 809;  m->vtotal = 831;
+        m->flags = 0x2 | 0x4;      /* NHSYNC | PVSYNC */
+    }
+    m->vrefresh = 60;
+    m->type = 0x20;                /* DRM_MODE_TYPE_USERDEF */
+    snprintf(m->name, sizeof m->name, "1280x800");
+    c.set_connectors_ptr = (__u64)(uintptr_t)&conn;
+    c.count_connectors = 1;
+    c.crtc_id = crtc_id;
+    c.fb_id = fb_id;
+    c.mode_valid = 1;
+    if (real_ioctl(fd, DRM_IOCTL_MODE_SETCRTC_, &c) < 0) {
+        pointsrc_log("kms mode: SETCRTC 1280x800 %s (%u kHz) on connector %u: %s",
+                     (!rb || !*rb || *rb == '2') ? "74.25" : *rb == '1' ? "CVT-RB" : "CVT",
+                     m->clock, conn, strerror(errno));
+        return -1;
+    }
+    pointsrc_log("kms mode: HDMI now 1280x800@60 %s (%u kHz), connector %u -- no "
+                 "scaling on our side",
+                 (!rb || !*rb || *rb == '2') ? "74.25" : *rb == '1' ? "CVT-RB" : "CVT",
+                 m->clock, conn);
+    return 0;
+}
+
 static void *scanout_setup(int w, int h, int bpp, int *pitch_bytes)
 {
     struct drm_mode_create_dumb cd;
@@ -670,6 +788,17 @@ static void *scanout_setup(int w, int h, int bpp, int *pitch_bytes)
      * flash whatever the allocator left there. */
     memset(pix, 0, (size_t)cd.size);
 
+    if (kms_mode_wanted(w, h)) {
+        if (kms_set_mode(fd, crtc_id, fc.fb_id, w, h) != 0)
+            return NULL;
+        *pitch_bytes = (int)cd.pitch;
+        g_scan.fd = fd;
+        g_scan.crtc_index = crtc_index;
+        pointsrc_log("kms scanout: crtc %u fb %u %dx%d %d bpp pitch %u at %p (own mode)",
+                     crtc_id, fc.fb_id, w, h, bpp, cd.pitch, pix);
+        return pix;
+    }
+
     memset(&sp, 0, sizeof sp);
     sp.plane_id = plane;
     sp.crtc_id = crtc_id;
@@ -698,6 +827,13 @@ void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes)
     void *pix;
 
     pthread_mutex_lock(&g_scan_lock);
+    /* With KMS_MODE the buffer's size is the mode's, whoever asks first: the page
+     * painters ask with fb0's 1920x1080 and can be first (seen), and must not make
+     * the scanout their size. They get NULL and keep fb0. */
+    if (!g_scan.tried && getenv("KMS_MODE") && !kms_mode_wanted(w, h)) {
+        pthread_mutex_unlock(&g_scan_lock);
+        return NULL;
+    }
     if (!g_scan.tried) {
         const char *e = getenv("KMS_SCANOUT");
 
@@ -749,4 +885,20 @@ int rx3_kms_vsync(void)
         vbl.type |= (idx << 1) & 0x3e;         /* _DRM_VBLANK_HIGH_CRTC_SHIFT 1 */
     vbl.sequence = 1;
     return real_ioctl(g_scan.fd, _IOWR('d', 0x3a, vbl), &vbl) < 0 ? -1 : 0;
+}
+
+/* The geometry KMS_MODE puts on the screen, for the page painters: with it the
+ * screen is that size (1280x800 = rbp's own), not fb0's, and their picture
+ * rectangle is the whole of it. 0 = no KMS_MODE, use fb0's. */
+__attribute__((visibility("default")))
+int rx3_kms_mode_geom(int *w, int *h)
+{
+    const char *e = getenv("KMS_MODE");
+    int mw = 0, mh = 0;
+
+    if (!e || sscanf(e, "%dx%d", &mw, &mh) != 2 || mw <= 0 || mh <= 0)
+        return 0;
+    *w = mw;
+    *h = mh;
+    return 1;
 }

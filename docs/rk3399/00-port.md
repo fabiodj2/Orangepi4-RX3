@@ -155,6 +155,32 @@ Back-out without rebuilding: `RB_KMS_SCANOUT=0 RB_DFB_PRESENT_SKIP=` (the old
 route, measured above). The pre-change binaries are kept beside the new ones as
 `*.pre-kms` in the runtime.
 
+## 1280x800 on the wire (2026-10-13): no scaling on our side
+
+The monitor (EDID: 1920x1080, 1280x720, 1024x768, 800x600, 720x576/480) does not
+list 1280x800, but it takes one. `KMS_MODE=1280x800` (launcher default) makes the
+shim program it on the CRTC with `SETCRTC` and scan out a 1280x800 buffer; the
+driver sees that geometry (`KMS_MODE` overrides `real_var` in `fbdev.c`) and picks
+`mode=convert`, a 1:1 565→8888 copy. The monitor fits it to 1728x1080 with 96 px
+bars itself -- the same rectangle the scaled route drew.
+
+* **Pixel clock.** CVT 1280x800@60 (83.5 MHz) is refused with EINVAL:
+  dw-hdmi-rockchip rejects a clock its PLL cannot hit within 0.1%. 74.25 MHz is
+  one it can (this monitor's 1280x720 runs on it), so the default timing is
+  CVT-RB porches with htotal stretched to 1504: `1280 1328 1360 1504 / 800 803
+  809 823, +h -v`, 74.25e6/(1504*823) = 59.99 Hz. `KMS_MODE_RB=1` (71 MHz) and
+  `0` (83.5) stay selectable.
+* **Touch** keeps `POINT_ABS_FIT=1`: the panel is physical, the picture on it is
+  still 1728x1080 at 96 (fit computed from fb0's 1920x1080).
+* **Page painters** (menu band, cursor) take the mode's size from
+  `rx3_kms_mode_geom()`, so their picture is 1280x800 at 0,0 and the band is a
+  1280-wide plane. Without that the band was laid out 1728 wide at x=96.
+* **Ordering.** With `KMS_MODE` set, only a caller asking for exactly that size
+  creates the scanout: the cursor/menu used to get there first with 1920x1080.
+
+Measured: 60.0 fps, worst second 59.9 (scaled route: worst 58). Picture and
+touch confirmed by the operator. `RB_KMS_MODE=` brings back the scaled route.
+
 ## Open
 
 * Overlay bands vs. KMS: the effect picker and the drawers can now get planes;

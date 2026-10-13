@@ -120,6 +120,12 @@ nohup "$DDJ" -v -f "$RUNTIME/tmp/rb-ctrl.fifo" \
 # (drmband.c rx3_kms_scanout, fbdev.c fbdev_kms_scanout). DFB_PRESENT_SKIP=1
 # because the pixel budget's skip=2 was sized for the slow route. Either at 0
 # (RB_KMS_SCANOUT=0, RB_DFB_PRESENT_SKIP=) puts back the measured old path.
+# KMS_MODE=1280x800 (default; RB_KMS_MODE= for the 1920x1080 scaled route): the
+# shim sets a 1280x800@60 mode on the HDMI (not in this monitor's EDID, 74.25 MHz
+# timing) and rbp's frame goes out 1:1 -- mode=convert, no scaling on our side.
+# The monitor itself fits it to 1728x1080 with 96 px bars, the same picture
+# rectangle the scaled route drew, so touch keeps POINT_ABS_FIT=1 (fit computed
+# from fb0's 1920x1080). Measured: 60.0 fps, worst second 59.9. RB_KMS_MODE_RB: 2 (default) 74.25 MHz, 1 CVT-RB 71 MHz, 0 CVT 83.5 MHz (refused).
 # RBP_FRAME_US=1000: rbp's own limiter sleeps until 16 ms after the previous
 # flip RETURNED; with a flip that waits for vblank that is 30 fps. The shim
 # rewrites its 16000 to 1000 in memory (fb_shim.c) so vblank alone paces it.
@@ -145,6 +151,9 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     POINT_HOTCUE_TOUCH="${RB_POINT_HOTCUE_TOUCH:-1}" \
     DRM_BAND_CARD="$DRI_CARD" \
     KMS_SCANOUT="${RB_KMS_SCANOUT:-1}" \
+    KMS_MODE="${RB_KMS_MODE-1280x800}" \
+    KMS_MODE_RB="${RB_KMS_MODE_RB:-2}" \
+    POINT_ABS_FIT="${RB_POINT_ABS_FIT:-1}" \
     DFB_PRESENT_SKIP="${RB_DFB_PRESENT_SKIP:-1}" \
     RBP_FRAME_US="${RB_RBP_FRAME_US:-1000}" \
     FB_VSYNC_RATE="${RB_FB_VSYNC_RATE:-0}" \

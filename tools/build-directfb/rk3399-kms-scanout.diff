@@ -95,7 +95,33 @@
       for (y = 0; y < dh; y++) {
            const unsigned char *srow = src + (size_t)(accy >> 16) * spitch;
            unsigned char       *drow = dst + (size_t)(y + dy) * fpitch + (size_t)dx * dbpp;
-@@ -2316,6 +2390,43 @@
+@@ -1029,6 +1103,25 @@
+           else
+                shared->rot_fpitch = shared->fix.line_length;
+ 
++          /* KMS_MODE=WxH (with the shim's KMS scanout): the shim programs that
++             mode on the CRTC and scans out a buffer of exactly that size, so the
++             fb0 geometry is not what the panel shows. Present as if the fb were
++             WxH -- for 1280x800 that is mode=convert, a 1:1 copy, no scaling. */
++          {
++               const char *km = getenv( "KMS_MODE" );
++               int         kw = 0, kh = 0;
++
++               if (km && sscanf( km, "%dx%d", &kw, &kh ) == 2 && kw > 0 && kh > 0) {
++                    shared->real_var.xres         = kw;
++                    shared->real_var.yres         = kh;
++                    shared->real_var.xres_virtual = kw;
++                    shared->real_var.yres_virtual = kh;
++                    shared->rot_fpitch = kw * (shared->real_var.bits_per_pixel / 8);
++                    D_INFO( "FBDev/Present: KMS_MODE %dx%d -- presenting for that, "
++                            "not for fb0's geometry\n", kw, kh );
++               }
++          }
++
+           shared->rot_fw = shared->real_var.xres;
+           shared->rot_fh = shared->real_var.yres;
+ 
+@@ -2316,6 +2409,43 @@
       return DFB_OK;
  }
  
@@ -139,7 +165,7 @@
  static DFBResult
  primaryFlipRegion( CoreLayer             *layer,
                     void                  *driver_data,
-@@ -2376,10 +2487,26 @@
+@@ -2376,10 +2506,26 @@
                 long long t0 = (shared->present_mode == PRESENT_SCALE)
                                ? direct_clock_get_micros() : 0;
  
@@ -168,7 +194,7 @@
                                        shared->present_mode, shared->rot_deg,
                                        shared->present_dx, shared->present_dy,
                                        shared->present_dw, shared->present_dh );
-@@ -2400,11 +2527,13 @@
+@@ -2400,11 +2546,13 @@
                      }
                 }
  
