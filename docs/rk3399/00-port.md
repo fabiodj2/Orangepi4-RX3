@@ -310,6 +310,46 @@ removes it. The two units `Conflicts=`, so starting either stops the other.
   with extra env (e.g. `RX3_EXTRA_PRELOAD`) is `systemctl stop` first, then the
   launcher by hand.
 
+## rx3-toolkit core (2026-10-13): staged, not yet the default
+
+The KEY/STEMS panel had never appeared on this stack: `librx3_core.so` (legacy core,
+RX3-RK3399-DDJ400 overlay `key-stems-0cb402e0`) and keyshim both hook
+`solveCoordToKey` @0x2dc104, keyshim initialised first and the core logged
+`rejected: unexpected solveCoordToKey prologue` and dropped its UI (the old stack
+too, since keyshim gained its pad-touch hook). Fix: the core is now LAST in
+`LD_PRELOAD` (preload constructors run in reverse order), so it hooks first and
+keyshim's pad-touch hook steps aside -- the hook that had been firing hot cues and
+pad-mode changes from the strip under the BEAT FX page. The shim's strip rules now
+also require the STATUS | BEAT FX toggle half to be lit (0x7b7d7b at x 1140 /
+1225, y 445/470): the KEY and STEMS pages share BEAT FX's hatch.
+
+The operator then asked for the current rx3-toolkit (github.com/Tratosca/rx3-toolkit,
+MPL-2.0): STEMS panel with levels and Slip Loop pads 5/6/7, Key Shift/Sync/Match,
+Beat Jump 32, Samples, Browse columns, theme/logo. Staged beside the legacy core:
+
+* Build: `make hook` in an export of `toolkit/main` (commit in
+  `work/toolkit/TOOLKIT_COMMIT`), board clang 19 + lld. Imports: libc/pthread only.
+* Compatibility (our rbp `d111195...` vs stock 1.20 `3513d34...`, 49 differing
+  ranges): Beat Jump 32 and no-quantize are already in our rbp byte for byte; of 70
+  addresses the toolkit hooks, only the image-table word @0x1d192c (legacy value
+  `0a3601e3`, toolkit `a53601e3`) and solveCoordToKey (keyshim, handled by order)
+  overlap.
+* `scripts/rk3399/toolkit/stage-toolkit.py` writes `root/pdj/toolkit/`
+  (librx3_core.so, rbp with that one word, panel art via `RX3_TAB_*`), the glyph
+  atlases at their fixed paths, and `work/toolkit/toolkit.env` (each module.sh's
+  exports).
+* Stems: the toolkit reads `RX3STM1` role files or `RX3PKG2`, not the legacy
+  `RX3STM2` (64-byte header + DRUMS + VOCAL). `stm2-to-stm1.py` splits each into
+  `<base>.rx3stem` (vocal) + `<base>.rx3drums` without re-separating, into
+  `root/pdj/RX3_STEMS_TK` (12/12 tracks, 1.3 GB; originals untouched).
+* Launcher: `RX3_CORE=toolkit` preloads `/root/pdj/toolkit/librx3_core.so`, sources
+  `toolkit.env`, bind-mounts the rbp variant over `/root/pdj/rbp`; `stop_all` always
+  unmounts it. Default `legacy`, verified unchanged.
+* DDJ-400: SAMPLER mode already reaches rbp as Slip Loop, so pads 5/6/7 =
+  INST/VOCAL/DRUMS with the toolkit; BEAT JUMP pads 7/8 = -32/+32. Lost with the
+  toolkit core: the legacy stems command channel (PAD FX 2 pads 1-3) and SHIFT+pad
+  hot-cue delete, both legacy-core features.
+
 ## Open
 
 * Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.

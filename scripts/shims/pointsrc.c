@@ -1240,38 +1240,74 @@ static const short strip_probe[8][2] = {
     { 670, 501 }, { 830, 501 }, { 1007, 501 }, { 1150, 501 },
 };
 
+/* The STATUS | BEAT FX toggle's two halves, as drawn: the selected half is filled
+ * grey 0x7b7d7b, the other black. With the KEY/STEMS core active (librx3_core) the
+ * strip has two more pages, KEY and STEMS, on the same grey hatch as BEAT FX, and the
+ * toggle then shows NEITHER half lit -- so the hatch alone does not mean BEAT FX
+ * (2026-10-13: the shim took taps on KEY- / 0 / KEY+ for bank slots). */
+static const short toggle_status_probe[2][2] = { { 1140, 445 }, { 1140, 470 } };
+static const short toggle_bfx_probe[2][2]    = { { 1225, 445 }, { 1225, 470 } };
+
+/* The scanout pixel under a logical point, as r,g,b; -1 when it cannot be read. */
+static int scan_px(const unsigned char *pix, int w, int h, int pitch, int lx, int ly,
+                   int *r, int *g, int *b)
+{
+    /* The picture is 1280x800 logical, fitted by height and centred: 1:1 with
+     * KMS_MODE=1280x800, 1728x1080 at x 96 on the scaled 1920x1080 route. */
+    long pw = (long)POINT_LOGICAL_W * h / POINT_LOGICAL_H;
+    long ox = (w - pw) / 2;
+    long sx = ox + (long)lx * pw / POINT_LOGICAL_W;
+    long sy = (long)ly * h / POINT_LOGICAL_H;
+    const unsigned char *q;
+
+    if (sx < 0 || sx >= w || sy < 0 || sy >= h)
+        return -1;
+    q = pix + sy * pitch + sx * 4;              /* XRGB8888: B G R X */
+    *b = q[0];
+    *g = q[1];
+    *r = q[2];
+    return 0;
+}
+
+static int toggle_lit(const unsigned char *pix, int w, int h, int pitch,
+                      const short pr[2][2])
+{
+    int i, r, g, b;
+
+    for (i = 0; i < 2; i++)
+        if (scan_px(pix, w, h, pitch, pr[i][0], pr[i][1], &r, &g, &b) < 0 ||
+            r < 0x68 || r > 0x90 || g < 0x68 || g > 0x90 || b < 0x68 || b > 0x90)
+            return 0;
+    return 1;
+}
+
 static int strip_page(void)
 {
     const unsigned char *pix;
     const void *base;
-    int w, h, pitch, i, hatch = 0, black = 0;
-    long pw, ox;
+    int w, h, pitch, i, hatch = 0, black = 0, st, bf;
 
     if (rx3_kms_peek(&base, &w, &h, &pitch) < 0 || w <= 0 || h <= 0)
         return -1;
     pix = base;
-    /* The picture is 1280x800 logical, fitted by height and centred: 1:1 with
-     * KMS_MODE=1280x800, 1728x1080 at x 96 on the scaled 1920x1080 route. */
-    pw = (long)POINT_LOGICAL_W * h / POINT_LOGICAL_H;
-    ox = (w - pw) / 2;
     for (i = 0; i < 8; i++) {
-        long sx = ox + (long)strip_probe[i][0] * pw / POINT_LOGICAL_W;
-        long sy = (long)strip_probe[i][1] * h / POINT_LOGICAL_H;
-        const unsigned char *q;
-        int b, g, r;
+        int r, g, b;
 
-        if (sx < 0 || sx >= w || sy < 0 || sy >= h)
+        if (scan_px(pix, w, h, pitch, strip_probe[i][0], strip_probe[i][1],
+                    &r, &g, &b) < 0)
             return -1;
-        q = pix + sy * pitch + sx * 4;          /* XRGB8888: B G R X */
-        b = q[0]; g = q[1]; r = q[2];
         if (r >= 0x18 && r <= 0x38 && g >= 0x18 && g <= 0x38 && b >= 0x18 && b <= 0x38)
             hatch++;
         else if (r < 8 && g < 8 && b < 8)
             black++;
     }
-    if (hatch >= 6)
+    st = toggle_lit(pix, w, h, pitch, toggle_status_probe);
+    bf = toggle_lit(pix, w, h, pitch, toggle_bfx_probe);
+    /* Both terms, so neither a KEY/STEMS page (hatch, no half lit) nor a half-drawn
+     * frame is ever read as one of the two pages this file has rules for. */
+    if (hatch >= 6 && bf && !st)
         return 1;
-    if (black >= 6)
+    if (black >= 6 && st && !bf)
         return 0;
     return -1;
 }

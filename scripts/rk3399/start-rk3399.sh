@@ -31,7 +31,32 @@ USB_SEG=${USBWATCH_SEG:-/usb}
 # open()/read()/close() own /dev/tsc2007_2-0048 (a pipe fed by pointsrc) and
 # /dev/gpiodrv; memshim stays for the MAP_SHARED fd=-1 RTC mmap. keyshim must
 # stay: it is the DDJ-400's path into IKeyManager.
-PRELOAD=/root/pdj/librx3_core.so:/usr/lib/rbpi4b/fbshim.so:/usr/lib/memshim.so:/usr/lib/audioshim.so:/usr/lib/keyshim.so:/usr/lib/netshim.so
+#
+# librx3_core.so goes LAST, and that is load-bearing too: preloaded constructors run
+# in reverse list order, so last = first to initialise. The core (KEY/STEMS panel)
+# and keyshim (its "native touchscreen performance pads") both hook rbp's
+# solveCoordToKey @0x2dc104 and each refuses a prologue it does not recognise. With
+# the core first in the list, keyshim hooked first and the core logged "rejected:
+# unexpected solveCoordToKey prologue" and dropped its whole UI -- no KEY/STEMS tabs,
+# no stems panel (2026-10-13; the old stack too, since keyshim gained that hook).
+# Core first to initialise: its UI installs, keyshim's pad-touch hook steps aside
+# ("native pad touch hook rejected") -- the hook that fired hot cues and pad-mode
+# changes from the strip under the BEAT FX page. The core exports no functions, so
+# its place in the list changes no symbol resolution.
+# RX3_CORE picks the KEY/STEMS core: `legacy` (default) is the RX3-RK3399-DDJ400
+# core in /root/pdj; `toolkit` is an rx3-toolkit build staged by
+# scripts/rk3399/toolkit/stage-toolkit.py into /root/pdj/toolkit, with its rbp
+# variant (the toolkit's image-table word) bind-mounted over /root/pdj/rbp for that
+# run and its modules' settings from work/toolkit/toolkit.env. stop_all always
+# takes the mount down, so a legacy start never sees the variant.
+RX3_CORE=${RX3_CORE:-legacy}
+TOOLKIT_ENV="$REPO/work/toolkit/toolkit.env"
+case "$RX3_CORE" in
+    legacy)  CORE_LIB=/root/pdj/librx3_core.so ;;
+    toolkit) CORE_LIB=/root/pdj/toolkit/librx3_core.so ;;
+    *) echo "RX3_CORE must be legacy or toolkit, not '$RX3_CORE'" >&2; exit 2 ;;
+esac
+PRELOAD=/usr/lib/rbpi4b/fbshim.so:/usr/lib/memshim.so:/usr/lib/audioshim.so:/usr/lib/keyshim.so:/usr/lib/netshim.so:$CORE_LIB
 # RX3_EXTRA_PRELOAD: diagnostic libraries appended for one run (e.g.
 # /usr/lib/rbpi4b/blittrace.so, tools/blittrace). Empty by default.
 PRELOAD="$PRELOAD${RX3_EXTRA_PRELOAD:+:$RX3_EXTRA_PRELOAD}"
@@ -41,6 +66,8 @@ stop_all() {
     # (same rbp command line), and restores the console.
     sh "$OLD_LAUNCHER" stop >/dev/null 2>&1 || true
     env RX3_RUNTIME="$RUNTIME" USBWATCH_SEG="$USB_SEG" sh "$WATCHER" stop 2>/dev/null || true
+    # The toolkit core's rbp variant (RX3_CORE=toolkit) is only ever a bind mount.
+    while mountpoint -q "$RUNTIME/root/pdj/rbp"; do umount "$RUNTIME/root/pdj/rbp" || break; done
 }
 
 status() {
@@ -64,6 +91,16 @@ stop_all
 rm -f /run/rx3-interface-off
 
 for d in proc sys dev/snd dev/shm dev/input tmp media/usb1/sda1; do mkdir -p "$RUNTIME/$d"; done
+if [ "$RX3_CORE" = toolkit ]; then
+    for f in "$TOOLKIT_ENV" "$RUNTIME/root/pdj/toolkit/rbp" "$RUNTIME$CORE_LIB"; do
+        [ -e "$f" ] || { echo "RX3_CORE=toolkit: $f missing (run scripts/rk3399/toolkit/stage-toolkit.py)" >&2; exit 1; }
+    done
+    . "$TOOLKIT_ENV"
+    mount --bind "$RUNTIME/root/pdj/toolkit/rbp" "$RUNTIME/root/pdj/rbp"
+    echo "core: rx3-toolkit ($CORE_LIB, rbp variant mounted, stems $RX3_STEMS_DIR)"
+else
+    echo "core: legacy ($CORE_LIB)"
+fi
 mountpoint -q "$RUNTIME/proc"      || mount --bind /proc "$RUNTIME/proc"
 mountpoint -q "$RUNTIME/sys"       || mount --bind /sys "$RUNTIME/sys"
 mountpoint -q "$RUNTIME/dev/shm"   || mount --bind /dev/shm "$RUNTIME/dev/shm"
@@ -164,8 +201,8 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     FB_VSYNC_RATE="${RB_FB_VSYNC_RATE:-0}" \
     RX3_AUDIO_DEVICE='hw:CARD=DDJ400,DEV=0' \
     RX3_HP_GAIN_X="$HP_GAIN" \
-    RX3_KEYSHIFT=1 \
-    RX3_STEMS_DIR=/root/pdj/RX3_STEMS \
+    RX3_KEYSHIFT="${RX3_KEYSHIFT:-1}" \
+    RX3_STEMS_DIR="${RX3_STEMS_DIR:-/root/pdj/RX3_STEMS}" \
     LD_PRELOAD="$PRELOAD" \
     /lib/ld-linux.so.3 /root/pdj/rbp -a \
     >"$LOGDIR/rbp.log" 2>&1 </dev/null &
