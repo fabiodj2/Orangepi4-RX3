@@ -60,6 +60,8 @@ esac
 
 mkdir -p "$LOGDIR"
 stop_all
+# A start is an ON: a leftover OFF marker would park the supervisor below.
+rm -f /run/rx3-interface-off
 
 for d in proc sys dev/snd dev/shm dev/input tmp media/usb1/sda1; do mkdir -p "$RUNTIME/$d"; done
 mountpoint -q "$RUNTIME/proc"      || mount --bind /proc "$RUNTIME/proc"
@@ -196,6 +198,13 @@ status
 if [ "${1:-start}" = run ]; then
     trap 'stop_all; exit 0' TERM INT
     while kill -0 "$RBP_PID" 2>/dev/null; do sleep 2; done
+    # The DDJ-400 interface gesture turned the screen OFF (toggle-interface.sh):
+    # keep ddj400-bridge up to hear the gesture that turns it back ON, which
+    # restarts the service. Exiting here would make systemd restart rbp at once.
+    if [ -e /run/rx3-interface-off ]; then
+        echo 'rbp stopped by the interface toggle: waiting for ON'
+        while [ -e /run/rx3-interface-off ]; do sleep 2; done
+    fi
     echo 'rbp exited'
     stop_all
     exit 1

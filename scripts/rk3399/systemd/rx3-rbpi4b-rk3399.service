@@ -1,0 +1,35 @@
+# The rbpi4b display/touch + DDJ-400 stack on the Orange Pi 4 LTS (RK3399).
+# Install: scripts/rk3399/install-service.sh. docs/rk3399/00-port.md, "Service".
+[Unit]
+Description=RX3 rbp on RK3399 (rbpi4b display/touch + DDJ-400)
+Documentation=file:/home/orangepi/RX3-RBPI4B-RK3399/docs/rk3399/00-port.md
+Wants=network-online.target
+After=local-fs.target sound.target network-online.target
+# Same rbp, same devices: only one of the two stacks may run.
+Conflicts=rx3-rk3399-ddj400.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# `run` supervises: it returns only when rbp is gone (exit 1, so systemd restarts
+# the stack) or on SIGTERM (its trap runs stop_all and exits 0).
+Type=simple
+User=root
+Group=root
+Environment=HOME=/home/orangepi
+WorkingDirectory=/home/orangepi/RX3-RBPI4B-RK3399
+# The DDJ-400's USB audio/MIDI and HDMI settle after boot (the old unit's value).
+ExecStartPre=/bin/sleep 8
+ExecStart=/bin/sh /home/orangepi/RX3-RBPI4B-RK3399/scripts/rk3399/start-rk3399.sh run
+# SIGTERM to the launcher only; its trap stops everything in order and restores the
+# console. Whatever is left after it exits is killed.
+KillMode=mixed
+TimeoutStartSec=infinity
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+StandardOutput=truncate:/home/orangepi/RX3-RBPI4B-RK3399/work/log/launcher-run.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

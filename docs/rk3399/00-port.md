@@ -262,6 +262,30 @@ keeps that record.
 29 X-PAD taps -- no flip to pads, no pad-mode change, no cue; on STATUS the pad hot
 cue fires. Previous shim: `fbshim.so.pre-stripgate`.
 
+## Service (2026-10-13)
+
+`sudo sh scripts/rk3399/install-service.sh` installs and enables
+`rx3-rbpi4b-rk3399.service` (unit in `scripts/rk3399/systemd/`), disables the old
+`rx3-rk3399-ddj400.service` and starts the new one; `... install-service.sh uninstall`
+removes it. The two units `Conflicts=`, so starting either stops the other.
+
+* `ExecStart` is `start-rk3399.sh run`: it supervises and exits 1 when rbp dies, so
+  `Restart=on-failure` brings the whole stack back 10 s later (tested: rbp SIGKILLed,
+  NRestarts=1, back up). `systemctl stop` sends SIGTERM to the launcher only
+  (`KillMode=mixed`); its trap runs `stop_all`, which restores the console.
+* Output goes to `work/log/launcher-run.log` (truncated at each start), not the
+  journal; systemd's own lines are in `journalctl -u rx3-rbpi4b-rk3399`.
+* The DDJ-400 interface gesture (ddj400-bridge writes
+  `/run/rx3-interface-toggle.request`, the old project's `rx3-interface-toggle.path`
+  fires) now runs `scripts/rk3399/toggle-interface.sh` through a drop-in
+  (`rx3-interface-toggle.service.d/rbpi4b.conf`). OFF stops rbp only and leaves
+  `/run/rx3-interface-off`; the supervisor sees the marker and waits instead of
+  exiting, so ddj400-bridge stays up to hear the gesture again. ON clears the marker
+  and restarts the service. A start always clears a stale marker.
+* Manual runs: `sudo systemctl restart|stop|start rx3-rbpi4b-rk3399`. A diagnostic run
+  with extra env (e.g. `RX3_EXTRA_PRELOAD`) is `systemctl stop` first, then the
+  launcher by hand.
+
 ## Open
 
 * Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.
