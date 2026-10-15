@@ -24,10 +24,12 @@ The full engineering record — every measurement, decision and rollback — is
 
 ## Screenshots
 
-Captured live off the running unit's own scanout (`scripts/rk3399/capture-screens.py`
-drives rbp's key API through the keyshim FIFO and pulls each frame through
-`fbshim.so`'s screenshot tool — see [docs/rk3399/screenshots](docs/rk3399/screenshots)
-for the full set and how to reproduce it).
+Captured live off the running unit's own scanout — `scripts/rk3399/capture-screens.py`
+drives rbp through three injection paths (key presses, raw touch taps and STEMS-panel
+commands, all independent of the real DDJ-400's own control traffic) and pulls each
+frame through `fbshim.so`'s screenshot tool. 23 screens in all; this is a sample — see
+[docs/rk3399/screenshots](docs/rk3399/screenshots) for the full set and how to
+reproduce it.
 
 <table>
 <tr>
@@ -76,6 +78,42 @@ for the full set and how to reproduce it).
 
 **Pad banks**: BEAT LOOP / SLIP LOOP / BEAT JUMP (deck 1)
 <img src="docs/rk3399/screenshots/pads-beatloop-d1.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**STEMS panel** (deck 1)
+<img src="docs/rk3399/screenshots/stems-panel-d1.png" width="100%">
+</td>
+<td width="50%">
+
+**KEY panel** (deck 1)
+<img src="docs/rk3399/screenshots/key-panel-d1.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**UTILITY → DECK** category
+<img src="docs/rk3399/screenshots/utility-deck-settings.png" width="100%">
+</td>
+<td width="50%">
+
+**UTILITY → GENERAL** category
+<img src="docs/rk3399/screenshots/utility-general-settings.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**SEARCH**, the on-screen keyboard
+<img src="docs/rk3399/screenshots/search-keyboard.png" width="100%">
+</td>
+<td width="50%">
+
+**BEAT FX** engaged (DELAY, deck 1)
+<img src="docs/rk3399/screenshots/beatfx-on.png" width="100%">
 </td>
 </tr>
 </table>

@@ -642,13 +642,33 @@ only, at the operator's call.
     `/tmp/rb-ctrl.fifo`, so it never touches a live controller) to walk the
     UI through a known-good, hardware-verified sequence of screens and pull
     one screenshot each, converted with the new `scripts/rk3399/bmp2png.py`
-    (pure stdlib, no Pillow/ImageMagick on the board). Ten screens now live
-    in `docs/rk3399/screenshots/` and in the README gallery. Mapping which
-    controller keys actually change the screen (and which, like `MENU` and
-    `REKORDBOX`, turned out not to do anything in this build) is recorded in
-    that script's own header comment -- the live UTILITY screen itself still
-    has no confirmed key and was captured by hand via the touchscreen's **MY
-    SETTINGS MENU** button, same as above.
+    (pure stdlib, no Pillow/ImageMagick on the board).
+  - **Same day, extended**: a second pass added two more injection paths --
+    a debug hook in `fbshim.so` (`touch_inject_tick()`, a request file at
+    `/tmp/rx3-touch.request`, feeding `tscfake_emit()` the same way
+    `pointsrc.c`'s own STEMS-panel taps already do) for raw touch, and a
+    direct write to `/tmp/rx3-stems-touch.fifo` (root-owned 0600, same
+    12-byte protocol as `ddj400-bridge.c`'s `stems_touch_send()`) to open
+    the STEMS and KEY panels without the DDJ-400's SHIFT+BEAT JUMP /
+    SHIFT+SAMPLER combos. Also: **`MENU` (`0x0206`) does open UTILITY after
+    all** -- a plain tap does nothing (it's rbp's own MY SETTINGS toggle on
+    the SOURCE screen specifically), but a **~400-1100 ms hold** reaches
+    UTILITY from any screen, on rbp's own timer (`docs/07-touch.md`,
+    `docs/08-controls.md` already had this measured; tonight's work just
+    hadn't held it long enough to notice). UTILITY itself takes no touch at
+    all, confirmed per `docs/07-touch.md` -- it is driven entirely by the
+    browse selector (key `0x420c` to push/select, and keyshim's host-only
+    "rotate" trigger `0x7f02` for relative scroll, one row per record: a
+    single record with a large param was measured to sometimes move only 1
+    row, so the script sends a burst of unit steps instead, like a real
+    detent). 23 screens now live in `docs/rk3399/screenshots/`, including
+    DECK/MIXER/GENERAL (UTILITY's three categories), all nine of BROWSE's
+    sort tabs, SEARCH, STEMS, KEY and BEAT FX engaged. **Not reachable**:
+    PLAYLIST and USB STOP, two columns of the shim's own swipe-down top menu
+    band (`menu_zone.c`) -- that band intercepts the real touchscreen's raw
+    reports a layer upstream of `touch_inject_tick()`'s synthetic feed, so
+    this injection path structurally can't reach it; would need a hook
+    further upstream, closer to the real device read.
   - This is RE on Pioneer's own closed firmware, not our code or even the
     open rx3-toolkit -- categorically more open-ended and risky than anything
     else on this list. Paused at the operator's call, 2026-10-15.

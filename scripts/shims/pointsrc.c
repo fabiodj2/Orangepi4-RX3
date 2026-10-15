@@ -1727,6 +1727,42 @@ static void screenshot_tick(void)
     pointsrc_log("screenshot: %dx%d -> %s\n", w, h, SCREENSHOT_FILE);
 }
 
+/* Debug/test tap injection: write "<down> <x> <y>\n" (logical 1280x800, same
+ * space as stems_tap()'s panel taps above) to TOUCH_INJECT_REQUEST and it is
+ * fed into rbp's own touch stream via tscfake_emit() -- the same call this
+ * file already uses for the STEMS/KEY panel's own synthetic taps, just driven
+ * from outside the process instead of from a zone handler. Used to script a
+ * tour of touch-only screens (UTILITY, BROWSE's sort tabs, ...) that have no
+ * DDJ-400 key equivalent. One request = one down or up edge; a caller sends
+ * a press as two requests ("1 x y" then "0 x y") a beat apart, exactly like a
+ * real touch. */
+#define TOUCH_INJECT_REQUEST "/tmp/rx3-touch.request"
+
+static void touch_inject_tick(void)
+{
+    int fd, down, x, y;
+    char buf[64];
+    ssize_t n;
+
+    fd = real_open(TOUCH_INJECT_REQUEST, O_RDONLY, 0);
+    if (fd < 0)
+        return;
+    n = read(fd, buf, sizeof(buf) - 1);
+    real_close(fd);
+    unlink(TOUCH_INJECT_REQUEST);
+    if (n <= 0)
+        return;
+    buf[n] = '\0';
+    if (sscanf(buf, "%d %d %d", &down, &x, &y) != 3)
+        return;
+    if (x < 0) x = 0;
+    if (x >= POINT_LOGICAL_W) x = POINT_LOGICAL_W - 1;
+    if (y < 0) y = 0;
+    if (y >= POINT_LOGICAL_H) y = POINT_LOGICAL_H - 1;
+    tscfake_emit(down ? 1 : 0, x, y);
+    pointsrc_log("touch inject: down=%d x=%d y=%d\n", down, x, y);
+}
+
 static void *bfx_thread(void *arg)
 {
     (void)arg;
@@ -1740,6 +1776,7 @@ static void *bfx_thread(void *arg)
         bfx_state_tick();
         rx3_brightness_tick();
         screenshot_tick();
+        touch_inject_tick();
         usleep(50000);
     }
     return NULL;
