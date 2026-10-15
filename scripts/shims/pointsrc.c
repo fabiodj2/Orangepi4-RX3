@@ -1651,6 +1651,88 @@ static void bfx_state_tick(void)
     (void)pwrite(bfx_state_fd, &now, sizeof now, 0);
 }
 
+/* MASTER REC (item 7, 2026-10-15): djengine::DjEngineIF::getRecordingStatus()/
+ * startRecording()/stopRecording(), all `this`-only member functions on the
+ * same DJ_ENGINE_GLOBAL singleton two other native calls already use (see
+ * rbp_abi.h). Two halves, same split as BFX above and deliberately so:
+ *
+ *   - master_rec_state_tick() only ever READS getRecordingStatus() and
+ *     mirrors it to a state file, every bfx_thread tick (50ms), same shape
+ *     as bfx_state_tick(). Zero risk, and it is what got exercised live
+ *     FIRST, before either native call that writes a file to the USB stick
+ *     was ever touched, specifically to confirm the DJ_ENGINE_GLOBAL pointer
+ *     and the calling convention off a read before trusting them for a
+ *     write. It keeps running regardless of the toggle below.
+ *   - master_rec_toggle_tick() polls MASTER_REC_TOGGLE_REQUEST and, on a
+ *     hit, reads the status and calls start or stop accordingly -- the only
+ *     place this file calls startRecording()/stopRecording(). A toggle
+ *     rather than separate start/stop requests because every caller (the
+ *     DDJ-400's held-SHIFT gesture, a touchscreen button) wants "flip it"
+ *     and none has an independent reason to know which state it's already
+ *     in. */
+#define MASTER_REC_STATE_FILE  "/tmp/rx3-master-rec-state.bin"
+#define MASTER_REC_STATE_MAGIC 0x43455252u   /* "RREC" */
+#define MASTER_REC_TOGGLE_REQUEST "/tmp/rx3-master-rec-toggle.request"
+
+struct master_rec_state_pkt { uint32_t magic, sequence; uint8_t recording, reserved[3]; };
+
+static int master_rec_state_fd = -1;
+
+static int master_rec_status(void)
+{
+    void *engine = *(void *volatile *)DJ_ENGINE_GLOBAL;
+
+    if (!engine)
+        return 0;
+    return ((int (*)(void *))DJ_ENGINE_GET_REC_STATUS)(engine) ? 1 : 0;
+}
+
+static void master_rec_state_tick(void)
+{
+    static int last_recording = -1;
+    static uint32_t seq;
+    struct master_rec_state_pkt now;
+    int recording;
+
+    if (master_rec_state_fd < 0)
+        return;
+    recording = master_rec_status();
+    if (seq && recording == last_recording)
+        return;
+    last_recording = recording;
+    memset(&now, 0, sizeof now);
+    now.magic = MASTER_REC_STATE_MAGIC;
+    now.sequence = ++seq;
+    now.recording = (uint8_t)recording;
+    (void)pwrite(master_rec_state_fd, &now, sizeof now, 0);
+    pointsrc_log("master rec: status -> %s\n", recording ? "recording" : "idle");
+}
+
+static void master_rec_toggle_tick(void)
+{
+    void *engine;
+    int probe, recording;
+
+    probe = real_open(MASTER_REC_TOGGLE_REQUEST, O_RDONLY, 0);
+    if (probe < 0)
+        return;
+    real_close(probe);
+    unlink(MASTER_REC_TOGGLE_REQUEST);
+    engine = *(void *volatile *)DJ_ENGINE_GLOBAL;
+    if (!engine) {
+        pointsrc_log("master rec: toggle requested but engine not up yet\n");
+        return;
+    }
+    recording = master_rec_status();
+    if (recording) {
+        ((void (*)(void *))DJ_ENGINE_STOP_RECORDING)(engine);
+        pointsrc_log("master rec: stopRecording() called\n");
+    } else {
+        ((void (*)(void *))DJ_ENGINE_START_RECORDING)(engine);
+        pointsrc_log("master rec: startRecording() called\n");
+    }
+}
+
 /* One-off screenshot, for measuring where to draw a new control against a
  * live screen (2026-10-15, the CROSSFADER CURVE row): touch
  * /tmp/rx3-screenshot.request and the next tick dumps the live scanout
@@ -1772,11 +1854,19 @@ static void *bfx_thread(void *arg)
         return NULL;
     }
     pointsrc_log("bfx: on/off state -> %s\n", BFX_STATE_FILE);
+    master_rec_state_fd = real_open(MASTER_REC_STATE_FILE, O_RDWR | O_CREAT, 0644);
+    if (master_rec_state_fd < 0)
+        pointsrc_log("master rec: open %s: %s\n", MASTER_REC_STATE_FILE, strerror(errno));
+    else
+        pointsrc_log("master rec: status -> %s, toggle <- %s\n",
+                      MASTER_REC_STATE_FILE, MASTER_REC_TOGGLE_REQUEST);
     for (;;) {
         bfx_state_tick();
         rx3_brightness_tick();
         screenshot_tick();
         touch_inject_tick();
+        master_rec_state_tick();
+        master_rec_toggle_tick();
         usleep(50000);
     }
     return NULL;

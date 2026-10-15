@@ -569,6 +569,75 @@ only, at the operator's call.
   the cue, so skipping it would bring the cue back on a reload. Expected native
   rbp behaviour, not something this wiring introduced; left as-is (operator's
   call, 2026-10-15).
+* DDJ-400 keepalive (2026-10-15, RESOLVED): with no physical input, the
+  controller (or the kernel's own USB autosuspend) was observed going to
+  standby. `ddj400-bridge.c` now tracks the last real note/CC it dispatched
+  and, after 8s idle, sends a MIDI Active Sensing byte (`0xFE`) every 5s --
+  content-free by spec, no LED/UI effect, already silently dropped by this
+  file's own `read()` loop (`b >= 0xF8`) if the DDJ-400 ever echoes one back.
+  Exercises the USB-MIDI endpoint either way. Off with `DDJ400_KEEPALIVE=0`.
+  Verified live: log shows it firing at 8002ms/13007ms idle and going silent
+  again the moment a real key was pressed.
+* UTILITY -> GENERAL -> VERSION No. (2026-10-15, RESOLVED): was "Ver Can't
+  get version." on this build. RE'd `ui::StatWatcher::getUtilVersion()`
+  (`nm -C`, then disassembly since the string pointer needed the file-offset
+  vs. vaddr distinction worked out by hand once): it's a plain
+  `juce::File("/tmp/smdj.rev").existsAsFile()` check -- if the file exists it
+  loads it, keeps bytes > 0x1F, caps at 32 chars, and displays "Ver
+  <that>"; otherwise the fallback string. No binary patch needed at all: the
+  launcher (`start-rk3399.sh`) now writes `1.20 XDJ-400 v<BUILD>` into that
+  path on every start, where `BUILD` (repo root, plain integer) is bumped by
+  one on every commit to either this repo or RX3-RK3399-DDJ400 as part of
+  this project, synced to GitHub each time. Verified live: UTILITY shows
+  "Ver 1.20 XDJ-400 v1".
+* MASTER REC (2026-10-15, investigated, PAUSED -- not working yet): asked
+  for a touchscreen control plus a DDJ-400 SHIFT-held-3s gesture to
+  start/stop recording the master to the USB stick's `PIONEER DJ REC`
+  folder (a real, if unused, XDJ-RX3 feature -- that folder structure
+  already exists from firmware's own prior behaviour). Found the native API
+  by name: `djengine::DjEngineIF::getRecordingStatus()`/`startRecording()`/
+  `stopRecording()`, all `this`-only member functions on the same
+  `DJ_ENGINE_GLOBAL` (`0x0268617c`) singleton two other native calls already
+  use safely (`mixer_crossfader_assign()`, `rx3_native_color_fx_select()` in
+  keyshim.c). Built the scaffolding in `fbshim.so`/`pointsrc.c`
+  (`master_rec_state_tick()` mirrors `getRecordingStatus()` to
+  `/tmp/rx3-master-rec-state.bin` every 50ms, read-only; a toggle request at
+  `/tmp/rx3-master-rec-toggle.request` calls start or stop depending on
+  current status) and tested **incrementally, per the operator's explicit
+  go-ahead to try start/stop only after the read-only status call proved
+  safe**: the status read came back `idle` cleanly (engine up, call
+  resolved, no crash) -- then `startRecording()` was called live. It did
+  **not** crash anything, but it also did not start a recording: no file
+  appeared, status stayed `idle`. Disassembled the call chain to find out
+  why: `DjEngineIF::startRecording()` -> `MixerEngine::startRecording()`
+  reads a member pointer at `this+0x54` (the engine's `WavWriter*`) and
+  no-ops immediately if it's null (`MixerEngine::prepareRecording()` has the
+  exact same null-guard, so calling that first wouldn't have helped either
+  -- it's a forwarder, not a constructor). It *is* null in this build/
+  environment. Traced one level further: `MixerEngine::MixerEngine()`'s
+  constructor copies a pointer from `[some-injected-context + 0x84]` into
+  `this+0x54` around file offset `0x585b4` -- i.e. the WavWriter reference
+  is meant to arrive via dependency injection from whatever constructs
+  MixerEngine, and that source object's own `+0x84` slot is apparently never
+  populated in our environment (plausibly the same class of gap as the
+  missing RX3 sub-MCU elsewhere in this project -- rbp expecting real
+  XDJ-RX3 hardware state that doesn't exist here). **Next step if resumed**:
+  the likely fix is to construct a `WavWriter` ourselves --
+  `operator new(sizeof WavWriter)` then call `WavWriter::WavWriter()`
+  (address already known, `0x5b470`, default ctor, no args beyond `this`) --
+  and poke the resulting pointer directly into the live `MixerEngine`
+  instance's `+0x54` slot from our own shim, bypassing the broken DI path
+  entirely, the same kind of direct object-state poke already used
+  elsewhere in this project (mixer defaults, crossfader assignment). Not
+  attempted live tonight: constructing a C++ object from raw `operator new`
+  + ctor call is a step up in risk from calling an existing instance's
+  methods, and `WavWriter`'s own constructor might have further DI
+  expectations of its own that would need checking first, same caution as
+  CROSSFADER CURVE got paused for. The read-only status plumbing is live
+  and harmless either way (`master_rec_state_tick()`/`master_rec_status()`
+  in `pointsrc.c`, `rbp_abi.h` has the three function addresses +
+  `DJ_ENGINE_GLOBAL`), so a future session can pick this up without
+  re-deriving the addresses.
 * CROSSFADER CURVE in Utility (2026-10-15, requested, paused -- picked back
   up and paused again the same day): rbp already has a full native
   crossfader-curve API (`mixerengine::MixerEngine::setCrossFaderCurve`/

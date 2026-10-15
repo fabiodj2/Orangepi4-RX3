@@ -799,6 +799,31 @@ static const signed char bfx_type_to_pos[15] = {
  * rx3_kms_vsync() reads it to fake brightness with a darkening overlay blended
  * into the scanout buffer instead (5 = none, 1 = max dim). */
 #define UI_GET_UTIL_LCD_BRIGHTNESS 0x000fee08
+/* djengine::DjEngineIF singleton instance pointer: the global holding it, not
+ * the vtable/class itself. Already load-bearing elsewhere (keyshim.c's
+ * mixer_crossfader_assign() and rx3_native_color_fx_select() both deref this
+ * same address as `void *engine` and pass it as the implicit `this` to a
+ * DjEngineIF member function) -- same pointer, reused here for MASTER REC
+ * (item 7, 2026-10-15). Zero when the engine isn't up yet; callers must
+ * guard it, same as those two do. */
+#define DJ_ENGINE_GLOBAL         0x0268617cUL
+/* djengine::DjEngineIF::getRecordingStatus() const / startRecording() /
+ * stopRecording(): found by name (`nm -C`, 2026-10-15) alongside
+ * mixerengine::MixerEngine's own same-named trio (MixerEngine is the layer
+ * DjEngineIF calls into; the IF-level ones are what the UI would use, so
+ * they're the ones called here). All three take only `this` -- no args,
+ * standard ARM r0-is-this member-function ABI, same calling shape as the two
+ * known-good DJ_ENGINE_GLOBAL calls above. getRecordingStatus() is read-only
+ * and was the first of the three exercised live (2026-10-15) before
+ * start/stopRecording() were ever called, specifically to confirm the
+ * pointer and calling convention before touching anything that writes to the
+ * USB stick. Return type for getRecordingStatus() is presumed int/bool
+ * (MixerEngine's sibling is declared `const`, same shape); not yet confirmed
+ * which bit pattern means "recording" vs "idle" beyond "0 at idle, observed
+ * live". */
+#define DJ_ENGINE_GET_REC_STATUS 0x0004fc0cUL
+#define DJ_ENGINE_START_RECORDING 0x0004f994UL
+#define DJ_ENGINE_STOP_RECORDING  0x0004fad0UL
 /* The four drawn boxes, x ranges, measured off the scanout 2026-10-13 (FLANGER 19..148,
  * ECHO 159..288, VINYL BRAKE 299..428, DELAY 439..568, all y 517..553); the shim's
  * rects split the 10 px gaps so a finger between two boxes still picks one. */

@@ -182,6 +182,16 @@ rm -f "$RUNTIME/tmp/req_LocalDBServer" "$RUNTIME/tmp/guard_LocalDBServer" \
       "$RUNTIME/tmp/audioshim.log" "$RUNTIME/tmp/keyshim.log" \
       "$RUNTIME/tmp/dfbdig9.log" "$RUNTIME/tmp/pointsrc.log"
 
+# UTILITY -> GENERAL -> VERSION No. reads /tmp/smdj.rev if it exists (native
+# ui::StatWatcher::getUtilVersion(), RE'd 2026-10-15: juce::File("/tmp/smdj.rev")
+# .existsAsFile(), loads it, keeps printable bytes, caps at 32 chars) and shows
+# "Ver <that>" -- otherwise "Ver Can't get version.", which is what this unit
+# showed before. $REPO/BUILD is a plain integer (first line only), bumped by
+# one on every commit to either this repo or RX3-RK3399-DDJ400 as part of
+# this project.
+printf '1.20 XDJ-400 v%s' "$(head -1 "$REPO/BUILD" 2>/dev/null || echo '?')" \
+    > "$RUNTIME/tmp/smdj.rev"
+
 # Identity touch calibration: tscfake writes logical 1280x800 (rbpi4b docs/07).
 CALIB='0
 0
