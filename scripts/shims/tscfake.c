@@ -13,6 +13,7 @@
 #include "syscalls.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -113,12 +114,18 @@ void tscfake_emit(int down, int x, int y)
      * opening release at exactly (0,0) is still published rather than silently
      * matching the initial state. */
     static int last_down = 0, last_x = 0, last_y = 0, primed = 0;
+    /* Two writers since 2026-10-14: the pointer thread and pointsrc's STEMS thread
+     * (controller taps on the toolkit panel). The dedup state is shared. */
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     unsigned char buf[TSC_RECORD_LEN];
 
     x = tscfake_wire_x(x);
 
-    if (primed && down == last_down && x == last_x && y == last_y)
+    pthread_mutex_lock(&lock);
+    if (primed && down == last_down && x == last_x && y == last_y) {
+        pthread_mutex_unlock(&lock);
         return;
+    }
 
     tscfake_record(down, x, y, buf);
     if (down && !last_down) {
@@ -133,6 +140,7 @@ void tscfake_emit(int down, int x, int y)
     last_x = x;
     last_y = y;
     primed = 1;
+    pthread_mutex_unlock(&lock);
 }
 
 static int ensure_pipe(void)

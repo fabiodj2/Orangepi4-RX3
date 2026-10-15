@@ -56,6 +56,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <elf.h>
+#include <link.h>
+#include <poll.h>
 #include <unistd.h>
 
 /* --- the kernel's input ABI, declared here rather than taken from
@@ -1315,6 +1319,427 @@ static int strip_page(void)
 static int strip_shows_pads(void)
 {
     return strip_page() == 0;
+}
+
+/* --- THE DDJ-400'S STEMS PAGE, as taps on the rx3-toolkit's own STEMS panel ------
+ *
+ * With RX3_CORE=toolkit the KEY/STEMS core is the rx3-toolkit's, and it takes no
+ * controller command: its stems answer SLIP LOOP pads 5-7 (which put the deck in
+ * SLIP LOOP, and a pad-mode key closes its panel) or a finger on its STEMS tab and
+ * controls. The operator's ask (2026-10-14): SHIFT+BEAT JUMP opens STEMS on the
+ * screen and pads 1-3 toggle DRUMS/VOCAL/INST there, as on the legacy core. So the
+ * bridge (RX3_STEMS_PADS=touch) writes a command to a FIFO and this thread acts on
+ * it: the page buttons tap the panel's tab where a finger would, the pads change
+ * the toolkit's state directly (stems_command, below).
+ *
+ * Tab geometry is the toolkit's (rx3_core_hook.c performance_tab_touch): KEY is
+ * the left tab, x 1090..1179, STEMS the right, x 1181..1270, y 384..431, drawn grey
+ * 0x7b7d7b when selected (a tap on a selected tab closes it, so it is tapped only
+ * when not lit). */
+#define STEMS_FIFO          "/tmp/rx3-stems-touch.fifo"
+#define STEMS_CMD_MAGIC     0x53434d44u     /* the bridge's stems_pad_command_packet */
+#define STEMS_CMD_OPEN      0x20
+#define KEY_CMD_OPEN        0x21
+#define KEY_CMD_PART        0x30            /* 0x30 -1, 0x31 own key, 0x32 +1 */
+#define STEMS_TAB_X         1225
+#define STEMS_TAB_Y         407
+
+struct stems_cmd { uint32_t magic, sequence; uint8_t deck, control; uint16_t reserved; };
+
+static const short stems_tab_probe[2][2] = { { 1186, 392 }, { 1265, 424 } };
+static const short key_tab_probe[2][2]   = { { 1095, 392 }, { 1170, 424 } };
+
+static int tab_lit(const short probe[2][2])
+{
+    const void *base;
+    int w, h, pitch;
+
+    if (rx3_kms_peek(&base, &w, &h, &pitch) < 0 || w <= 0 || h <= 0)
+        return 0;
+    return toggle_lit(base, w, h, pitch, probe);
+}
+
+static void stems_tap(int x, int y)
+{
+    int i;
+
+    /* never through a finger that is on the glass: wait it out, up to 0.5 s */
+    for (i = 0; i < 25 && st_down; i++)
+        usleep(20000);
+    if (st_down)
+        return;
+    tscfake_emit(1, x, y);
+    usleep(40000);
+    tscfake_emit(0, x, y);
+}
+
+/* Open the toolkit panel behind tab (x, y) unless it is already the selected one:
+ * a tap on a selected tab closes it. KEY is the left tab, STEMS the right. */
+static int open_panel(int x, int y, const short probe[2][2])
+{
+    int i;
+
+    if (!rbp_perf_screen())
+        return 0;
+    if (tab_lit(probe))
+        return 1;
+    stems_tap(x, y);
+    for (i = 0; i < 25; i++) {
+        usleep(20000);
+        if (tab_lit(probe))
+            return 1;
+    }
+    return 0;
+}
+
+static int stems_open_panel(void)
+{
+    return open_panel(STEMS_TAB_X, STEMS_TAB_Y, stems_tab_probe);
+}
+
+/* KEY (SHIFT+SAMPLER on the DDJ-400, 2026-10-14): its pads are -1 / the track's own
+ * key / +1, the toolkit's stepper parts 0/1/2 (keyshift_fire). */
+#define KEY_TAB_X           1135
+#define KEY_TAB_Y           407
+
+/* THE OTHER DIRECTION: the pads' LEDs. ddj400-bridge already lights PAD FX 2 pads
+ * 1-3 from /tmp/rx3-stems-pad-state.bin (stems_pad_state_tick: magic "SMTS", a
+ * sequence, active[deck] bit n = pad n+1 lit, armed[deck]) -- the file the legacy
+ * core wrote. Here it is written from the toolkit core's own state, so a tap on the
+ * glass, a pad, or a new track all reach the LEDs. The toolkit's role bits are
+ * already the pads' order: 1 INST, 2 VOCAL, 4 DRUMS (rx3_stems_panel.h).
+ *
+ * Where: its `stems_decks[2]` (rx3_stems_decl.h), found by name in the loaded
+ * librx3_core.so's own .symtab (the build is not stripped), so a rebuilt core moves
+ * nothing here. Per deck: +0 reader, +4 status (2 = ready), +8 selection (available
+ * roles in bits 4..6), +12 levels (7 bits per role, 0 = off), +20 armed. The symbol
+ * must be 2 x 0x4e0 bytes, the layout this was written against, or nothing is read. */
+#define STEMS_STATE_FILE   "/tmp/rx3-stems-pad-state.bin"
+#define STEMS_STATE_MAGIC  0x53544d53u
+#define STEMS_DECKS_SIZE   0x9c0u
+
+struct stems_state_pkt { uint32_t magic, sequence; uint8_t active[2], armed[2]; };
+
+static const unsigned char *stems_decks_addr;
+static int stems_state_fd = -1;
+
+/* KEY's LEDs, the same way: the toolkit's `keyshift_decks[2]` (rx3_keyshift_decl.h,
+ * 0x50 bytes each, `request` at +0: semitones = (request & 0xff) - 12). The file
+ * /tmp/rx3-key-pad-state.bin is { "KEYS", sequence, leds[2] }, leds bit n = KEY
+ * SHIFT pad n+1: pad 1 lit below the track's key, pad 2 lit AT it, pad 3 above. */
+#define KEY_STATE_FILE     "/tmp/rx3-key-pad-state.bin"
+#define KEY_STATE_MAGIC    0x5359454bu
+#define KEY_DECKS_SIZE     0xa0u
+
+struct key_state_pkt { uint32_t magic, sequence; uint8_t leds[2], reserved[2]; };
+
+static const unsigned char *key_decks_addr;
+static void (*key_fire_fn)(unsigned int, unsigned int, unsigned int);
+/* The toolkit's `performance_refresh_pending`: its touch path sets it after every
+ * change (ui/rx3_pad_widgets.h) and its renderer repaints the open panel. Its
+ * watcher sets it for other changes only once `performance_window_ready`, which on
+ * this unit never comes up (measured 2026-10-14: 0, the "native performance
+ * window" line never logged), so a pad change played but the panel kept the old
+ * state. Raised here whenever the shim sees the stems or key state change. */
+static unsigned int *panel_refresh_flag;
+
+static void panel_refresh(void)
+{
+    if (panel_refresh_flag)
+        __atomic_store_n(panel_refresh_flag, 1u, __ATOMIC_SEQ_CST);
+}
+static int key_state_fd = -1;
+
+struct stems_find { const char *path; unsigned long base; };
+
+static int stems_find_core(struct dl_phdr_info *info, size_t size, void *arg)
+{
+    struct stems_find *f = arg;
+
+    (void)size;
+    if (info->dlpi_name && strstr(info->dlpi_name, "librx3_core.so")) {
+        f->path = info->dlpi_name;
+        f->base = info->dlpi_addr;
+        return 1;
+    }
+    return 0;
+}
+
+static unsigned long stems_symbol(const char *path, const char *name, unsigned long *size)
+{
+    Elf32_Ehdr eh;
+    Elf32_Shdr sh, link;
+    unsigned long found = 0;
+    int fd = real_open(path, O_RDONLY, 0), i;
+
+    if (fd < 0)
+        return 0;
+    if (pread(fd, &eh, sizeof eh, 0) != (ssize_t)sizeof eh ||
+        memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS32)
+        goto out;
+    for (i = 0; i < eh.e_shnum && !found; i++) {
+        Elf32_Sym sym;
+        unsigned int k;
+        char nm[32];
+        size_t len = strlen(name) + 1;
+
+        if (pread(fd, &sh, sizeof sh, eh.e_shoff + (off_t)i * eh.e_shentsize) != (ssize_t)sizeof sh ||
+            sh.sh_type != SHT_SYMTAB ||
+            pread(fd, &link, sizeof link, eh.e_shoff + (off_t)sh.sh_link * eh.e_shentsize) != (ssize_t)sizeof link)
+            continue;
+        for (k = 0; k < sh.sh_size / sizeof sym; k++) {
+            if (pread(fd, &sym, sizeof sym, sh.sh_offset + (off_t)k * sizeof sym) != (ssize_t)sizeof sym)
+                break;
+            if (len > sizeof nm ||
+                pread(fd, nm, len, link.sh_offset + sym.st_name) != (ssize_t)len ||
+                memcmp(nm, name, len) != 0)
+                continue;
+            found = sym.st_value;
+            *size = sym.st_size;
+            break;
+        }
+    }
+out:
+    real_close(fd);
+    return found;
+}
+
+static void stems_state_init(void)
+{
+    struct stems_find f = { NULL, 0 };
+    unsigned long off, size = 0;
+
+    dl_iterate_phdr(stems_find_core, &f);
+    if (!f.path) {
+        pointsrc_log("stems: LEDs off: librx3_core.so not loaded\n");
+        return;
+    }
+    size = 0;
+    {
+        unsigned long koff = stems_symbol(f.path, "keyshift_decks", &size);
+
+        if (koff && size == KEY_DECKS_SIZE) {
+            key_decks_addr = (const unsigned char *)(f.base + koff);
+            key_state_fd = real_open(KEY_STATE_FILE, O_RDWR | O_CREAT, 0644);
+            pointsrc_log("key: LEDs from keyshift_decks @%p -> %s\n",
+                         (const void *)key_decks_addr, KEY_STATE_FILE);
+        } else {
+            pointsrc_log("key: LEDs off: keyshift_decks %s (size %lu)\n",
+                         koff ? "has an unknown layout" : "not found", size);
+        }
+    }
+    {
+        unsigned long fsz = 0, foff = stems_symbol(f.path, "keyshift_fire", &fsz);
+
+        if (foff && !(foff & 1u)) {
+            key_fire_fn = (void (*)(unsigned int, unsigned int, unsigned int))(f.base + foff);
+            pointsrc_log("key: keyshift_fire @%p\n", (void *)key_fire_fn);
+        }
+    }
+    {
+        unsigned long rsz = 0, roff = stems_symbol(f.path, "performance_refresh_pending", &rsz);
+
+        if (roff && rsz == 4) {
+            panel_refresh_flag = (unsigned int *)(f.base + roff);
+            pointsrc_log("stems: panel refresh flag @%p\n", (void *)panel_refresh_flag);
+        }
+    }
+    off = stems_symbol(f.path, "stems_decks", &size);
+    if (!off || size != STEMS_DECKS_SIZE) {
+        pointsrc_log("stems: LEDs off: stems_decks %s in %s (size %lu)\n",
+                     off ? "has an unknown layout" : "not found", f.path, size);
+        return;
+    }
+    stems_decks_addr = (const unsigned char *)(f.base + off);
+
+    /* SLIP LOOP PADS 5-7 STAY NATIVE (operator, 2026-10-14). The toolkit also maps
+     * SLIP LOOP pads 5/6/7 to INST/VOCAL/DRUMS (its stems_pad on the onKey_Pad hook,
+     * the hook's only client) and recolours their LEDs (slip_light); on the DDJ-400
+     * SAMPLER is SLIP LOOP, whose pads are this project's SLIP LOOP / RELEASE FX. Stems
+     * live on SHIFT+BEAT JUMP here, so that client is retired: pad_client_count 0 is
+     * the hook's own "no client" path (rx3_input.c pad_hooked -> the native onKey_Pad)
+     * and slip_light 0 its "native LEDs" path. Only when the one client is stems'. */
+    {
+        unsigned long csz = 0, coff = stems_symbol(f.path, "pad_client_count", &csz);
+        unsigned long lsz = 0, loff = stems_symbol(f.path, "slip_light", &lsz);
+        unsigned long tsz = 0, toff = stems_symbol(f.path, "pad_clients", &tsz);
+
+        if (coff && csz == 4 && toff && tsz >= 12 && loff && lsz == 4 &&
+            __atomic_load_n((uint32_t *)(f.base + coff), __ATOMIC_SEQ_CST) == 1u &&
+            *(uint32_t *)(f.base + toff) == (uint32_t)(f.base + off)) {
+            __atomic_store_n((uint32_t *)(f.base + coff), 0u, __ATOMIC_SEQ_CST);
+            __atomic_store_n((uint32_t *)(f.base + loff), 0u, __ATOMIC_SEQ_CST);
+            pointsrc_log("stems: SLIP LOOP pads 5-7 back to native (toolkit pad client retired)\n");
+        } else {
+            pointsrc_log("stems: SLIP LOOP pad client left as is (not the expected single stems client)\n");
+        }
+    }
+    /* the existing file, written in place: the bridge holds it open */
+    stems_state_fd = real_open(STEMS_STATE_FILE, O_RDWR | O_CREAT, 0644);
+    pointsrc_log("stems: LEDs from %s stems_decks @%p -> %s\n", f.path,
+                 (const void *)stems_decks_addr, STEMS_STATE_FILE);
+}
+
+static void key_state_tick(void)
+{
+    static struct key_state_pkt last;
+    static uint32_t seq;
+    struct key_state_pkt now;
+    int d;
+
+    if (!key_decks_addr || key_state_fd < 0)
+        return;
+    memset(&now, 0, sizeof now);
+    for (d = 0; d < 2; d++) {
+        uint32_t req = __atomic_load_n((const uint32_t *)(key_decks_addr + d * (KEY_DECKS_SIZE / 2)),
+                                       __ATOMIC_SEQ_CST);
+        int semi = (int)(req & 0xffu) - 12;
+
+        now.leds[d] = semi < 0 ? 1 : semi == 0 ? 2 : 4;
+    }
+    if (seq && !memcmp(now.leds, last.leds, 2))
+        return;
+    panel_refresh();
+    last = now;
+    now.magic = KEY_STATE_MAGIC;
+    now.sequence = ++seq;
+    (void)pwrite(key_state_fd, &now, sizeof now, 0);
+}
+
+static void stems_state_tick(void)
+{
+    key_state_tick();
+    static struct stems_state_pkt last;
+    static uint32_t seq;
+    struct stems_state_pkt now;
+    int d;
+
+    if (!stems_decks_addr || stems_state_fd < 0)
+        return;
+    memset(&now, 0, sizeof now);
+    for (d = 0; d < 2; d++) {
+        const unsigned char *c = stems_decks_addr + d * (STEMS_DECKS_SIZE / 2);
+        uint32_t reader = __atomic_load_n((const uint32_t *)(c + 0), __ATOMIC_SEQ_CST);
+        uint32_t status = __atomic_load_n((const uint32_t *)(c + 4), __ATOMIC_SEQ_CST);
+        uint32_t sel    = __atomic_load_n((const uint32_t *)(c + 8), __ATOMIC_SEQ_CST);
+        uint32_t levels = __atomic_load_n((const uint32_t *)(c + 12), __ATOMIC_SEQ_CST);
+        int32_t  armed  = __atomic_load_n((const int32_t *)(c + 20), __ATOMIC_SEQ_CST);
+        unsigned int avail = (sel >> 4) & 7u, on = 0, i;
+
+        for (i = 0; i < 3; i++)
+            if ((levels >> (i * 7u)) & 127u)
+                on |= 1u << i;
+        now.armed[d] = status == 2u && reader && armed;
+        now.active[d] = (uint8_t)(on & avail);
+    }
+    if (seq && !memcmp(now.active, last.active, 2) && !memcmp(now.armed, last.armed, 2))
+        return;
+    panel_refresh();
+    last = now;
+    now.magic = STEMS_STATE_MAGIC;
+    now.sequence = ++seq;
+    (void)pwrite(stems_state_fd, &now, sizeof now, 0);
+}
+
+/* Pads act on the toolkit's state directly (2026-10-14): taps on the panel were late
+ * under load, needed the panel open and the glass free, and the DRUMS-cell test read
+ * a switched-off VOCAL as the gap, dropping DRUMS. A stem toggle is what the
+ * toolkit's own stems_toggle() does, an atomic flip of the role's 7-bit level
+ * between 0 and 100 in `levels` (rx3_stems_audio.h stems_change_levels), under the
+ * gate its pad handler uses (status 2, reader, armed, role available). KEY calls the
+ * toolkit's own keyshift_fire(deck, 0, part), the stepper's touch action, found by
+ * name like stems_decks. The tabs are still tapped, only on the page buttons. */
+static int stems_toggle_direct(int deck, unsigned int bit)
+{
+    unsigned char *c;
+    uint32_t *levels, old, next;
+    unsigned int i;
+
+    if (!stems_decks_addr)
+        return 0;
+    c = (unsigned char *)stems_decks_addr + deck * (STEMS_DECKS_SIZE / 2);
+    if (__atomic_load_n((uint32_t *)(c + 4), __ATOMIC_SEQ_CST) != 2u ||
+        !__atomic_load_n((uint32_t *)(c + 0), __ATOMIC_SEQ_CST) ||
+        !__atomic_load_n((int32_t *)(c + 20), __ATOMIC_SEQ_CST) ||
+        !(((__atomic_load_n((uint32_t *)(c + 8), __ATOMIC_SEQ_CST) >> 4) & 7u) & bit))
+        return 0;
+    levels = (uint32_t *)(c + 12);
+    old = __atomic_load_n(levels, __ATOMIC_SEQ_CST);
+    for (;;) {
+        next = old;
+        for (i = 0; i < 3; i++)
+            if (bit & (1u << i)) {
+                unsigned int sh = i * 7u;
+                next = (next & ~(127u << sh)) | ((((old >> sh) & 127u) ? 0u : 100u) << sh);
+            }
+        if (__atomic_compare_exchange_n(levels, &old, next, 0,
+                                        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            return 1;
+    }
+}
+
+static void stems_command(const struct stems_cmd *c)
+{
+    int deck = c->deck;
+
+    if (c->control == STEMS_CMD_OPEN) {
+        pointsrc_log("stems: open panel -> %s\n", stems_open_panel() ? "open" : "not open");
+        return;
+    }
+    if (c->control == KEY_CMD_OPEN) {
+        pointsrc_log("key: open panel -> %s\n",
+                     open_panel(KEY_TAB_X, KEY_TAB_Y, key_tab_probe) ? "open" : "not open");
+        return;
+    }
+    if (deck < 0 || deck > 1)
+        return;
+    if (c->control >= KEY_CMD_PART && c->control <= KEY_CMD_PART + 2) {
+        if (!key_fire_fn) {
+            pointsrc_log("key: deck%d: keyshift_fire not found, dropped\n", deck + 1);
+            return;
+        }
+        key_fire_fn((unsigned int)deck, 0u, (unsigned int)(c->control - KEY_CMD_PART));
+        return;
+    }
+    /* controls in screen order: 0 INST (bit 1), 1 VOCAL (2), 2 DRUMS (4) */
+    if (c->control <= 2 && !stems_toggle_direct(deck, 1u << c->control))
+        pointsrc_log("stems: deck%d control %d: no such ready stem, ignored\n",
+                     deck + 1, c->control);
+}
+
+static void *stems_thread(void *arg)
+{
+    struct stems_cmd c;
+    int fd;
+
+    (void)arg;
+    unlink(STEMS_FIFO);
+    if (mkfifo(STEMS_FIFO, 0600) < 0 && errno != EEXIST) {
+        pointsrc_log("stems: mkfifo %s: %s\n", STEMS_FIFO, strerror(errno));
+        return NULL;
+    }
+    /* O_RDWR: a reader that is also a writer never sees EOF between bridge writes */
+    fd = real_open(STEMS_FIFO, O_RDWR, 0);
+    if (fd < 0) {
+        pointsrc_log("stems: open %s: %s\n", STEMS_FIFO, strerror(errno));
+        return NULL;
+    }
+    pointsrc_log("stems: controller commands on %s\n", STEMS_FIFO);
+    stems_state_init();
+    for (;;) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        ssize_t n;
+
+        stems_state_tick();
+        if (real_poll(&p, 1, 50) <= 0)
+            continue;
+        n = real_read(fd, &c, sizeof c);
+        if (n == (ssize_t)sizeof c && c.magic == STEMS_CMD_MAGIC) {
+            stems_command(&c);
+            stems_state_tick();
+        }
+    }
+    return NULL;
 }
 
 /* RBP'S STATUS CONTROLS STAY LIVE UNDER THE BEAT FX PAGE. Drawing the BEAT FX BANK +
@@ -2984,6 +3409,16 @@ int pointsrc_start(void)
 
     if (reader_started)
         return 0;
+    {
+        static int stems_started;
+        const char *sp = getenv("RX3_STEMS_PADS");
+        pthread_t stems_tid;
+
+        if (!stems_started && sp && strcmp(sp, "touch") == 0 && is_rbp_process() &&
+            (stems_started = 1) &&
+            pthread_create(&stems_tid, NULL, stems_thread, NULL) == 0)
+            pthread_detach(stems_tid);
+    }
     /* POINT_KIND=none means "no pointer at all" — the display-only bring-up
      * setting. Returning before creating the thread keeps that case free of a
      * thread that would only ever sleep. */

@@ -310,7 +310,7 @@ removes it. The two units `Conflicts=`, so starting either stops the other.
   with extra env (e.g. `RX3_EXTRA_PRELOAD`) is `systemctl stop` first, then the
   launcher by hand.
 
-## rx3-toolkit core (2026-10-13): staged, not yet the default
+## rx3-toolkit core (2026-10-13; the default since 2026-10-14)
 
 The KEY/STEMS panel had never appeared on this stack: `librx3_core.so` (legacy core,
 RX3-RK3399-DDJ400 overlay `key-stems-0cb402e0`) and keyshim both hook
@@ -342,14 +342,90 @@ Beat Jump 32, Samples, Browse columns, theme/logo. Staged beside the legacy core
   `RX3STM2` (64-byte header + DRUMS + VOCAL). `stm2-to-stm1.py` splits each into
   `<base>.rx3stem` (vocal) + `<base>.rx3drums` without re-separating, into
   `root/pdj/RX3_STEMS_TK` (12/12 tracks, 1.3 GB; originals untouched).
-* Launcher: `RX3_CORE=toolkit` preloads `/root/pdj/toolkit/librx3_core.so`, sources
+* Launcher: `RX3_CORE=toolkit` (the default since 2026-10-14; `RX3_CORE=legacy` goes
+  back) preloads `/root/pdj/toolkit/librx3_core.so` and `rbpcomm.so`, sources
   `toolkit.env`, bind-mounts the rbp variant over `/root/pdj/rbp`; `stop_all` always
-  unmounts it. Default `legacy`, verified unchanged.
-* DDJ-400: SAMPLER mode already reaches rbp as Slip Loop, so pads 5/6/7 =
-  INST/VOCAL/DRUMS with the toolkit; BEAT JUMP pads 7/8 = -32/+32. Lost with the
-  toolkit core: the legacy stems command channel (PAD FX 2 pads 1-3) and SHIFT+pad
-  hot-cue delete, both legacy-core features.
+  unmounts it.
+* The core was silent at first: it only starts when `/proc/self/comm` is `rbp`, and
+  this port runs rbp through the chroot's loader (`ld-linux.so.3`). `rbpcomm.so`
+  (`scripts/shims/rbpcomm.c`, last in `LD_PRELOAD` so its constructor runs first)
+  renames the thread to `rbp` when the command line is exactly that loader + rbp.
+  Its log, `/tmp/rx3-stems.log`, stops at 128 KB (the Key Shift statistics fill it in
+  minutes): move it aside to read a new session.
+* DDJ-400: see the next section. Lost with the toolkit core: SHIFT+pad hot-cue delete
+  (a legacy-core command).
+
+## DDJ-400 STEMS and KEY pages on the toolkit core (2026-10-14)
+
+Operator's map, verified on the unit (sound, screen and LEDs together):
+
+| DDJ-400 | Opens on screen | Pad 1 | Pad 2 | Pad 3 |
+|---|---|---|---|---|
+| SHIFT+BEAT JUMP (PAD FX 2, note 0x6B) | STEMS panel | INST | VOCAL | DRUMS |
+| SHIFT+SAMPLER (KEY SHIFT, note 0x6F) | KEY panel | -1 | the track's own key | +1 |
+
+LEDs: STEMS pad lit = that stem playing; KEY pad 1 lit below the track's key, pad 2
+lit at it, pad 3 above. SAMPLER pads 5-7 stay native SLIP LOOP / RELEASE FX.
+
+The toolkit core takes no controller command (its stems answer Slip Loop pads 5-7,
+which switch the deck to SLIP LOOP, and a pad-mode key closes its panel), so:
+
+* `ddj400-bridge` (RX3-RK3399-DDJ400), with `RX3_STEMS_PADS=touch` (exported by the
+  launcher in toolkit mode), writes its `stems_pad_command_packet` to the FIFO
+  `/tmp/rx3-stems-touch.fifo`: control 0x20 open STEMS, 0x21 open KEY, 0-2 a stem in
+  screen order, 0x30-0x32 a KEY stepper part. No pad-mode key is sent.
+* fbshim's pointsrc (`stems_thread`) reads it. The page buttons tap the toolkit's
+  tab (KEY x 1135, STEMS x 1225, y 407) only when it is not already lit (a tap on a
+  selected tab closes it; lit = grey 0x7b7d7b at the tab's corners). The pads do not
+  tap: a stem is flipped as the toolkit's `stems_toggle` does (atomic 0 <-> 100 of
+  the role's 7-bit level in `levels`, under its pad gate: status 2, reader, armed,
+  role available), KEY calls the toolkit's own `keyshift_fire(deck, 0, part)`.
+  Taps were tried first and were late under load, needed the panel open and the glass
+  free, and a colour test for the DRUMS cell dropped DRUMS whenever VOCAL was off.
+* The toolkit's symbols are found by name in the loaded library's `.symtab`
+  (`dl_iterate_phdr` + the file's section table; the build is not stripped), each
+  checked against its expected size: `stems_decks` (2 x 0x4e0), `keyshift_decks`
+  (2 x 0x50), `keyshift_fire`, `performance_refresh_pending`, `pad_client_count`,
+  `pad_clients`, `slip_light`. A rebuilt core moves nothing here; a changed layout
+  turns the feature off with a line in pointsrc.log.
+* Screen: the toolkit's watcher asks for a panel repaint only once
+  `performance_window_ready`, which here never comes up (the image it waits for,
+  0x159a, is never drawn), so a pad change played but the panel kept the old state.
+  The shim raises `performance_refresh_pending` (what a touch raises) whenever it
+  sees the stems or key state change.
+* LEDs, back the other way: the shim writes `/tmp/rx3-stems-pad-state.bin` (the
+  legacy core's file, "SMTS", read by the bridge's `stems_pad_state_tick`) and
+  `/tmp/rx3-key-pad-state.bin` ("KEYS", `key_pad_state_tick`, KEY SHIFT notes
+  0x70-0x72) from the toolkit's state. The DDJ darkens a pressed pad by itself, so
+  the bridge resends a page's LEDs after every pad edge (else pad 2 at the track's own
+  key went dark when pressed).
+* SAMPLER pads 5-7: the toolkit's stems client on its onKey_Pad hook (the hook's only
+  client) and its Slip Loop LED colours are retired by the shim
+  (`pad_client_count` 0, `slip_light` 0, the toolkit's own "no client" paths), only
+  when that one client is the stems one.
+
+Rollback: `RX3_CORE=legacy`; shim backups `fbshim.so.pre-stemstouch`, bridge backup
+`ddj400-bridge.pre-stemsslip` (RX3-RK3399-DDJ400 work/build/host).
+
+## Audio clicks: CPU governor (2026-10-14)
+
+Clicks while changing KEY/STEMS and while browsing. rbp's audio runs on `JuceALSA`
+with 2 periods of 64 frames (2.9 ms of buffer to the DDJ-400); audioshim logged no
+xrun, while `JuceALSA` and the `FGPR` decoders waited 5-18 ms for a CPU in each
+0.2 s window. Measured on the unit:
+
+* Pinning `JuceALSA` alone to cpu5 and the rest of rbp to the A53s made it worse
+  (constant clicks: the decoders need the A72s). Reverted at once.
+* SCHED_FIFO for `JuceALSA` is refused (EPERM, even as root): the kernel has
+  `CONFIG_RT_GROUP_SCHED=y` and the cgroup v2 `cpu` controller is on, so a task in a
+  service cgroup gets no RT runtime. Needs `rt_group_sched=0` on the kernel command
+  line (next step, not applied yet).
+* `performance` governor on both clusters: clicks drastically fewer, controller
+  commands answer at once. The launcher now sets it at start
+  (`RX3_CPU_GOVERNOR`, default `performance`, empty = leave it) and restores the saved
+  governor (`/run/rx3-rbpi4b-governor`) on stop.
 
 ## Open
 
-* Touch zones, DDJ-400 controls, audio, STEMS: to be verified by hand.
+* Remaining audio clicks: RT priority for `JuceALSA` (`rt_group_sched=0`, reboot).
+* Touch zones on the BEAT FX page corners, a full hot-cue pass: to be verified by hand.

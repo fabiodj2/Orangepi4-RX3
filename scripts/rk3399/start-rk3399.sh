@@ -43,17 +43,21 @@ USB_SEG=${USBWATCH_SEG:-/usb}
 # ("native pad touch hook rejected") -- the hook that fired hot cues and pad-mode
 # changes from the strip under the BEAT FX page. The core exports no functions, so
 # its place in the list changes no symbol resolution.
-# RX3_CORE picks the KEY/STEMS core: `legacy` (default) is the RX3-RK3399-DDJ400
-# core in /root/pdj; `toolkit` is an rx3-toolkit build staged by
+# RX3_CORE picks the KEY/STEMS core: `toolkit` (default since 2026-10-14) is an
+# rx3-toolkit build staged by
 # scripts/rk3399/toolkit/stage-toolkit.py into /root/pdj/toolkit, with its rbp
 # variant (the toolkit's image-table word) bind-mounted over /root/pdj/rbp for that
 # run and its modules' settings from work/toolkit/toolkit.env. stop_all always
-# takes the mount down, so a legacy start never sees the variant.
-RX3_CORE=${RX3_CORE:-legacy}
+# takes the mount down, so a legacy start never sees the variant. `legacy` is the
+# RX3-RK3399-DDJ400 core in /root/pdj (RX3_CORE=legacy to go back to it).
+RX3_CORE=${RX3_CORE:-toolkit}
 TOOLKIT_ENV="$REPO/work/toolkit/toolkit.env"
 case "$RX3_CORE" in
     legacy)  CORE_LIB=/root/pdj/librx3_core.so ;;
-    toolkit) CORE_LIB=/root/pdj/toolkit/librx3_core.so ;;
+    # rbpcomm.so (scripts/shims/rbpcomm.c) renames the process to "rbp": the
+    # toolkit core only starts when /proc/self/comm says rbp, and here it says
+    # ld-linux.so.3. Last in the list = first constructor to run.
+    toolkit) CORE_LIB=/root/pdj/toolkit/librx3_core.so:/usr/lib/rbpi4b/rbpcomm.so ;;
     *) echo "RX3_CORE must be legacy or toolkit, not '$RX3_CORE'" >&2; exit 2 ;;
 esac
 PRELOAD=/usr/lib/rbpi4b/fbshim.so:/usr/lib/memshim.so:/usr/lib/audioshim.so:/usr/lib/keyshim.so:/usr/lib/netshim.so:$CORE_LIB
@@ -68,6 +72,31 @@ stop_all() {
     env RX3_RUNTIME="$RUNTIME" USBWATCH_SEG="$USB_SEG" sh "$WATCHER" stop 2>/dev/null || true
     # The toolkit core's rbp variant (RX3_CORE=toolkit) is only ever a bind mount.
     while mountpoint -q "$RUNTIME/root/pdj/rbp"; do umount "$RUNTIME/root/pdj/rbp" || break; done
+    cpu_governor restore
+}
+
+# RX3_CPU_GOVERNOR: cpufreq governor while the player runs (default performance;
+# empty = leave it). ondemand let the clock drop between loads, and rbp's audio
+# path (JuceALSA + the FGPR decoders, 2 x 64-frame periods = 2.9 ms of buffer) then
+# missed its time: clicks on KEY/STEMS changes and while browsing. Measured
+# 2026-10-14: performance cut the clicks drastically and made controller commands
+# answer at once. The previous governor is saved and put back on stop.
+GOV_SAVE=/run/rx3-rbpi4b-governor
+cpu_governor() {
+    for pol in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -w "$pol/scaling_governor" ] || continue
+        n=${pol##*/}
+        if [ "$1" = restore ]; then
+            g=$(sed -n "s/^$n //p" "$GOV_SAVE" 2>/dev/null) || true
+            if [ -n "$g" ]; then echo "$g" > "$pol/scaling_governor"; fi
+        else
+            grep -q "^$n " "$GOV_SAVE" 2>/dev/null ||
+                echo "$n $(cat "$pol/scaling_governor")" >> "$GOV_SAVE"
+            echo "$1" > "$pol/scaling_governor"
+        fi
+    done
+    [ "$1" = restore ] && rm -f "$GOV_SAVE"
+    return 0
 }
 
 status() {
@@ -92,11 +121,15 @@ rm -f /run/rx3-interface-off
 
 for d in proc sys dev/snd dev/shm dev/input tmp media/usb1/sda1; do mkdir -p "$RUNTIME/$d"; done
 if [ "$RX3_CORE" = toolkit ]; then
-    for f in "$TOOLKIT_ENV" "$RUNTIME/root/pdj/toolkit/rbp" "$RUNTIME$CORE_LIB"; do
+    for f in "$TOOLKIT_ENV" "$RUNTIME/root/pdj/toolkit/rbp" "$RUNTIME/root/pdj/toolkit/librx3_core.so" "$RUNTIME/usr/lib/rbpi4b/rbpcomm.so"; do
         [ -e "$f" ] || { echo "RX3_CORE=toolkit: $f missing (run scripts/rk3399/toolkit/stage-toolkit.py)" >&2; exit 1; }
     done
     . "$TOOLKIT_ENV"
     mount --bind "$RUNTIME/root/pdj/toolkit/rbp" "$RUNTIME/root/pdj/rbp"
+    # DDJ-400 STEMS page: SHIFT+BEAT JUMP opens the toolkit's STEMS panel and pads
+    # 1-3 tap DRUMS/VOCAL/INST on it -- ddj400-bridge writes to a FIFO, fbshim's
+    # pointsrc taps the panel (the toolkit core reads no controller command).
+    export RX3_STEMS_PADS=touch
     echo "core: rx3-toolkit ($CORE_LIB, rbp variant mounted, stems $RX3_STEMS_DIR)"
 else
     echo "core: legacy ($CORE_LIB)"
@@ -180,6 +213,8 @@ nohup "$DDJ" -v -f "$RUNTIME/tmp/rb-ctrl.fifo" \
 # RK3399 is big.LITTLE: cpu0-3 Cortex-A53 @1.4 GHz, cpu4-5 Cortex-A72 @1.8 GHz;
 # unpinned, gui_task (which draws and presents) wanders onto the A53s.
 CPUS=${RX3_RBP_CPUS:-}
+GOV=${RX3_CPU_GOVERNOR-performance}
+if [ -n "$GOV" ]; then cpu_governor "$GOV"; echo "cpufreq governor: $GOV"; fi
 nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     PATH=/bin:/sbin:/usr/bin:/usr/sbin \
     DFBARGS="system=fbdev,mode=1280x800,pixelformat=RGB16,primary-only,no-hardware" \

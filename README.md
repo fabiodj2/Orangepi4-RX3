@@ -33,7 +33,8 @@ The full engineering record — every measurement, decision and rollback — is
 | Touch | USB touch monitor (`wch.cn TouchScreen`, absolute), fitted to the picture the monitor shows (1728×1080 at x 96 on a 1920×1080 panel) |
 | Controller | Pioneer **DDJ-400** over USB MIDI (`ddj400-bridge` + `keyshim.so`) |
 | Audio | DDJ-400 USB audio (`audioshim.so`), master + headphones |
-| STEMS | `librx3_core.so` |
+| KEY / STEMS | [rx3-toolkit](https://github.com/Tratosca/rx3-toolkit) core (`librx3_core.so`, MPL-2.0), staged by `scripts/rk3399/toolkit/` |
+| CPU | `performance` governor while the player runs (fewer audio clicks) |
 | Media | rekordbox-exported USB stick (`usb-watch.sh`, DeviceSQL import) |
 | Service | systemd `rx3-rbpi4b-rk3399.service`, starts at boot, restarts the stack if rbp dies |
 
@@ -48,6 +49,9 @@ The full engineering record — every measurement, decision and rollback — is
 | Touch fit | `POINT_ABS_FIT=1` maps the panel onto the presented picture | taps land under the finger, edges included |
 | Pad strip | the strip under the waveforms is read off the scanout (STATUS pads vs BEAT FX page); on **BEAT FX** the four bank slots are driven by the shim, on **STATUS** the strip ignores touch (`POINT_STATUS_TOUCH=1` to enable) | rbp keeps its STATUS pad cells and pad-mode caption live under the BEAT FX page, so a tap on FLANGER also fired a hot cue |
 | Service | `scripts/rk3399/install-service.sh`, DDJ-400 interface on/off gesture kept working | autostart with crash recovery |
+| KEY/STEMS core | the rx3-toolkit core (`RX3_CORE=toolkit`, default) with `rbpcomm.so` naming the process `rbp` | STEMS panel with levels, Key Shift/Sync, Browse columns |
+| DDJ-400 STEMS/KEY | SHIFT+BEAT JUMP opens STEMS, pads 1-3 = INST/VOCAL/DRUMS; SHIFT+SAMPLER opens KEY, pads 1-3 = -1 / own key / +1; pad LEDs follow the state | the toolkit core takes no controller command: the bridge talks to the touch shim, which acts on the core's own state |
+| Audio | `performance` cpufreq governor at start, restored on stop (`RX3_CPU_GOVERNOR`) | `ondemand` let the 2.9 ms audio path miss its time: clicks |
 
 ## State
 
@@ -56,9 +60,14 @@ The full engineering record — every measurement, decision and rollback — is
 gone; BEAT FX bank and X-PAD by touch without hot cues or pad-mode changes; STATUS
 strip ignoring touch; systemd start and automatic restart after rbp is killed.
 
-**Open:** the BEAT FX page's strip corners after the last change; a full
-DDJ-400 / audio / STEMS / hot-cue pass on this stack; a reboot test of the
-service. See the *Open* section of [docs/rk3399/00-port.md](docs/rk3399/00-port.md).
+**Verified 2026-10-14:** the rx3-toolkit core as default; DDJ-400 STEMS page
+(SHIFT+BEAT JUMP) and KEY page (SHIFT+SAMPLER) with sound, screen and pad LEDs in
+step; SAMPLER pads 5-7 native; the `performance` governor cut the audio clicks
+drastically.
+
+**Open:** the remaining audio clicks (real-time priority for the audio thread needs
+`rt_group_sched=0` on the kernel command line); the BEAT FX page's strip corners; a
+full hot-cue pass. See the *Open* section of [docs/rk3399/00-port.md](docs/rk3399/00-port.md).
 
 ---
 
@@ -94,6 +103,8 @@ Useful launcher knobs (environment, `RB_` / `RX3_` prefixed):
 | `RB_RBP_FRAME_US` | `1000` | rbp's frame floor; `-1` leaves rbp's 16 ms limiter |
 | `RX3_GUI_CPUS` | `4,5` | cores for `gui_task`; empty to leave it unpinned |
 | `RX3_EXTRA_PRELOAD` | — | append diagnostic libraries (e.g. `tools/blittrace`) |
+| `RX3_CORE` | `toolkit` | `legacy` = the RX3-RK3399-DDJ400 KEY/STEMS core |
+| `RX3_CPU_GOVERNOR` | `performance` | cpufreq governor while running; empty = leave it |
 
 ## Building
 
@@ -116,7 +127,10 @@ scripts/rk3399/install-service.sh systemd install / uninstall
 scripts/rk3399/toggle-interface.sh DDJ-400 interface on/off gesture
 scripts/rk3399/systemd/           the unit and the toggle drop-in
 scripts/shims/drmband.c           KMS scanout, vblank, native mode, scanout peek
-scripts/shims/pointsrc.c          touch: picture fit, pad strip rules, BEAT FX bank
+scripts/shims/pointsrc.c          touch: picture fit, pad strip rules, BEAT FX bank,
+                                  DDJ-400 STEMS/KEY commands and LEDs (toolkit core)
+scripts/shims/rbpcomm.c           names the player process "rbp" for the toolkit core
+scripts/rk3399/toolkit/           stage the rx3-toolkit core; RX3STM2 -> RX3STM1 stems
 tools/build-directfb/rk3399-*.diff DirectFB: KMS present, colorkey blit fix
 tools/blittrace/                  diagnostic: log DirectFB blits on chosen columns
 ```
