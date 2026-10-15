@@ -781,6 +781,24 @@ static const signed char bfx_type_to_pos[15] = {
  * UiGetBeatFXBankDeleteMode() is nonzero while the trash icon's delete mode is on. */
 #define UI_GET_MIX_BFX_BANK      0x000fe664
 #define UI_GET_BFX_BANK_DELMODE  0x000fe694
+/* UiGetMixBeatFxOn(): nonzero while the (global) Beat FX is currently applying,
+ * zero while bypassed -- the real source of truth for the effect's power state,
+ * found by name (`arm-linux-gnueabi-nm -C`, 2026-10-15) beside the rest of the
+ * UiGetMixBeatFx* family that feeds PlayInfoDataUpdate. No argument, like its
+ * siblings (UiGetMixBeatFxType etc.) and unlike UiGetMixBeatFXBank(slot), which
+ * takes the bank slot. Written here so the DDJ-400's own ON/OFF button LED can
+ * track the real state instead of a locally-toggled guess (ddj400-bridge.c's
+ * `led_beat_fx` used to just flip on every press, so a touchscreen toggle --
+ * which calls K_BFX directly and keeps no shadow of its own, fx_zone.h -- left
+ * the physical LED and the bridge's next toggle both wrong). */
+#define UI_GET_MIX_BFX_ON        0x000fe46c
+/* UiGetUtilLcdBrightness(): the Utility's LCD BRIGHTNESS setting, 1..5, found
+ * by name (`nm`, 2026-10-15) beside UiGetUtilChFaderCurve/UiGetUtilEqCurve --
+ * same "Util" family, a persisted setting rather than a live engine value, no
+ * argument. This unit has no real backlight to drive with it, so drmband.c's
+ * rx3_kms_vsync() reads it to fake brightness with a darkening overlay blended
+ * into the scanout buffer instead (5 = none, 1 = max dim). */
+#define UI_GET_UTIL_LCD_BRIGHTNESS 0x000fee08
 /* The four drawn boxes, x ranges, measured off the scanout 2026-10-13 (FLANGER 19..148,
  * ECHO 159..288, VINYL BRAKE 299..428, DELAY 439..568, all y 517..553); the shim's
  * rects split the 10 px gaps so a finger between two boxes still picks one. */

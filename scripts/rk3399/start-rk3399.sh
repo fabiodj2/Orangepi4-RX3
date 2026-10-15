@@ -130,6 +130,20 @@ if [ "$RX3_CORE" = toolkit ]; then
     # 1-3 tap DRUMS/VOCAL/INST on it -- ddj400-bridge writes to a FIFO, fbshim's
     # pointsrc taps the panel (the toolkit core reads no controller command).
     export RX3_STEMS_PADS=touch
+    # Light display mode (rx3-toolkit's theme-white module, already compiled into
+    # the mounted core; see docs/rk3399/00-port.md "## Open" 2026-10-15). Letter
+    # read by theme_read_mode: d=forced dark, l=light from the first frame,
+    # w=light once the player has painted, anything else (our default, 's') =
+    # dark at start and switchable from Utility (hold the shim's MENU control,
+    # util_zone.c) -- the toolkit author's own README flags Utility switching as
+    # unverified on real hardware, so this is a live experiment, not known-good.
+    # RX3_THEME= (empty) disables the module outright.
+    # stage-toolkit.py's toolkit.env (sourced above) ships RX3_THEME='' (off by
+    # default) alongside the light/dark tab artwork pairs (RX3_TAB_LIGHT_*) it
+    # already stages either way -- :- here, not -, because the var is SET
+    # (empty) by that file, not unset, so a plain ${RX3_THEME-s} would never
+    # override it.
+    export RX3_THEME=${RX3_THEME:-s}
     echo "core: rx3-toolkit ($CORE_LIB, rbp variant mounted, stems $RX3_STEMS_DIR)"
 else
     echo "core: legacy ($CORE_LIB)"
@@ -259,6 +273,26 @@ if [ -n "$GUI_CPUS" ]; then
         echo "gui_task $T pinned to cpus $GUI_CPUS"
     else
         echo "gui_task not found: left unpinned" >&2
+    fi
+fi
+
+# JuceALSA (rbp's audio thread: render + write, 2 x 64 frames = 2.9 ms to the
+# DDJ-400) as SCHED_FIFO, on any core: pinning it alone to one core starved the
+# decoders and clicked constantly (2026-10-14). Priority 45 stays under the kernel's
+# IRQ threads (50), the USB audio completions among them. Needs rt_group_sched=0 on
+# the kernel command line (CONFIG_RT_GROUP_SCHED + cgroup v2 cpu controller give a
+# service cgroup no RT runtime: EPERM, even as root). RX3_AUDIO_RT_PRIO= to skip.
+RT_PRIO=${RX3_AUDIO_RT_PRIO-45}
+if [ -n "$RT_PRIO" ]; then
+    for i in $(seq 1 40); do
+        A=$(ps -L -o tid=,comm= -p "$RBP_PID" 2>/dev/null | awk '$2=="JuceALSA"{print $1; exit}')
+        [ -n "$A" ] && break
+        sleep 0.5
+    done
+    if [ -n "$A" ] && chrt -f -p "$RT_PRIO" "$A" 2>/dev/null; then
+        echo "JuceALSA $A: SCHED_FIFO $RT_PRIO"
+    else
+        echo "JuceALSA ${A:-not found}: left SCHED_OTHER (rt_group_sched=0 on the kernel command line?)" >&2
     fi
 fi
 

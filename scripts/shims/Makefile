@@ -375,14 +375,14 @@ FBSHIM_OBJS := fb_shim.o tscfake.o pointsrc.o point_xform.o touch_zone.o \
                menu_window.o menu_window_paint.o menu_keyboard.o \
                browser_link.o drmband.o side_zone.o side_paint.o util_zone.o \
                wave_zone.o prompt_zone.o prompt_paint.o fx_zone.o fx_paint.o \
-               hc_zone.o usb_label.o fxpad_zone.o fxpad_paint.o
+               hc_zone.o usb_label.o fxpad_zone.o fxpad_paint.o plinn_scan.o
 FBSHIM_HDRS := tscfake.h pointsrc.h point_xform.h touch_zone.h syscalls.h \
                envutil.h fb_cursor.h cursor_paint.h fbdev.h menu_zone.h \
                menu_paint.h menu_font.h menu_draw.h drmband.h menu_window.h \
                menu_window_paint.h menu_keyboard.h browser_link.h side_zone.h \
                side_paint.h rbp_vu.h util_zone.h wave_zone.h prompt_zone.h \
                prompt_paint.h fx_zone.h fx_paint.h hc_zone.h usb_label.h \
-               fxpad_zone.h fxpad_paint.h
+               fxpad_zone.h fxpad_paint.h plinn_scan.h
 
 fbshim.so: $(FBSHIM_OBJS) rbp_key.o fader_state.o rbp_transport.o \
            $(FBSHIM_HDRS) rbp_transport.h \

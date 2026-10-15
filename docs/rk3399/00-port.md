@@ -425,7 +425,147 @@ xrun, while `JuceALSA` and the `FGPR` decoders waited 5-18 ms for a CPU in each
   (`RX3_CPU_GOVERNOR`, default `performance`, empty = leave it) and restores the saved
   governor (`/run/rx3-rbpi4b-governor`) on stop.
 
+## LCD BRIGHTNESS as a darkening overlay (2026-10-15): RESOLVED
+
+This unit has no real backlight to dim, so the Utility's native 1..5 LCD
+BRIGHTNESS setting (`UiGetUtilLcdBrightness`, found by name beside
+`UiGetUtilChFaderCurve`/`UiGetUtilEqCurve` -- same "Util" family, a persisted
+setting, no argument) did nothing. Simulated as a flat black overlay: 5 = none,
+1 = 75%, stepped 18.75% per level, same mapping the operator asked for.
+
+First attempt darkened the scanout buffer's own pixels in place, timed off
+`rx3_kms_vsync()` (`drmband.c`): no effect while the screen sat still (that
+hook only runs when DirectFB actually flips a new frame, so a static screen
+was never re-darkened) and a flicker while actively changing the Utility value
+(each real flip got darkened once, then immediately overwritten by the next
+blit) -- both reported live by the operator, and both explained once rx3_kms_vsync's
+real trigger (DirectFB's own flip, not a fixed clock) was understood.
+
+Fix: a whole-screen ARGB8888 overlay plane (`drm_band_setup_argb`, a thin
+wrapper the existing menu-band setup now shares via `drm_band_setup_ex`) held a
+flat black at an alpha the hardware blends against the primary on its own,
+every refresh, independent of how often the primary redraws. Shown/hidden/
+refilled by `rx3_brightness_tick()` (`drmband.h`), ticked from pointsrc.c's
+always-on `bfx_thread` every 50 ms (a Utility setting is not a per-frame
+concern, and ticking it from a flip-triggered hook would have reintroduced the
+same latency-while-idle problem for setup/teardown) -- only acts on an actual
+level change, and skips the plane entirely at level 5. Verified live: stepping
+all five levels both directions held steady with no flicker and no stall.
+
 ## Open
 
-* Remaining audio clicks: RT priority for `JuceALSA` (`rt_group_sched=0`, reboot).
+* Remaining audio clicks: RT priority for `JuceALSA` applied (`rt_group_sched=0` in
+  `/boot/armbianEnv.txt`, launcher sets `chrt -f 45` on `JuceALSA`) and confirmed live
+  in `launcher-run.log` after reboot ("JuceALSA 1422: SCHED_FIFO 45", service active).
+  Not yet re-measured by ear whether clicks are further reduced versus governor alone.
 * Touch zones on the BEAT FX page corners, a full hot-cue pass: to be verified by hand.
+* **RESOLVED 2026-10-14/15**: KEY panel -- pad -1/own key/+1 changed the track's
+  pitch (heard immediately) but the on-screen KEY panel's displayed value did not
+  follow the pad press, reported live on the unit. Root cause, confirmed live by
+  reading the raw `keyshift_decks` semitone out of rbp's memory alongside the
+  gated state file: `key_state_tick` (`scripts/shims/pointsrc.c`) only compared
+  the 3-state LED bucket (below/at/above the track's key) to decide whether to
+  call `panel_refresh()` / write `rx3-key-pad-state.bin`, not the actual
+  semitone, so repeated presses in the same direction (-1, -2, -3, -4, all the
+  same "below" bucket) were silently dropped from both the on-screen repaint and
+  the LED refresh past the first step, even though the toolkit's real pitch (and
+  the audio) kept changing -- confirmed with `deck1` sitting at -1/-2/-3/-4 while
+  the gated `seq`/`leds` stayed frozen, only moving again once the value crossed
+  back through 0. Fast presses mostly *looked* like they followed because they
+  tend to cross that 0 boundary often (plus an observed gradual auto-return-to-0
+  when the pad is left alone, unexplained but not the bug). Fix: `key_state_tick`
+  now tracks each deck's last raw semitone (not just the bucket) and triggers
+  `panel_refresh()` / the state write on any semitone change. Rebuilt `fbshim.so`
+  (`make clean && make ... all` per the build recipe above), deployed to
+  `work/runtime/rx3/usr/lib/rbpi4b/fbshim.so` (backup:
+  `fbshim.so.pre-keyvisualfix`), `systemctl restart rx3-rbpi4b-rk3399`.
+  Re-verified live with the same raw-memory-vs-gated-state comparison: four slow
+  -1 presses each produced their own `seq` increment, deck1 stepping -1 through
+  -12 one press at a time.
+* **RESOLVED 2026-10-15**: BEAT FX on/off state must follow either input path -- a
+  touchscreen tap and the controller's own button -- consistently; reported live
+  2026-10-14 that they could disagree. Root cause: `ddj400-bridge.c`'s
+  `led_handle_input()` blindly toggled a local shadow (`led_beat_fx ^= 1`) on every
+  physical ON/OFF press instead of reading rbp's real state, while a touchscreen tap
+  (`fx_zone.c`'s `FX_ACT_POWER`) sends `K_BFX` straight to rbp and keeps no shadow of
+  its own -- so after any touch toggle the bridge's next physical press flipped the
+  LED the wrong way. Fix: rbp exports a real getter, `UiGetMixBeatFxOn` @0xfe46c
+  (found by name with `nm`, same family/pattern as the already-used
+  `UiGetMixBeatFXBank`); `pointsrc.c` now has its own always-on thread
+  (`bfx_thread`/`bfx_state_tick`, independent of `RX3_STEMS_PADS` since Beat FX is
+  global, not a STEMS/KEY touch concern) that polls it and writes
+  `/tmp/rx3-bfx-state.bin` ("BFXS" magic) on change; `ddj400-bridge.c` gained
+  `bfx_state_tick()`, called from both tick sites beside `key_pad_state_tick()`,
+  which reads that file and drives `led_beat_fx`/the LED from it -- the blind toggle
+  in `led_handle_input()` was removed (the physical press still reaches rbp as
+  `K_BFX` through the ordinary notemap dispatch, unrelated to this LED-only
+  function). Rebuilt `fbshim.so` (backup `fbshim.so.pre-bfxled`) and `ddj400-bridge`
+  (`scripts/rb/build-rk3399-host-tools.sh`, built in place -- no separate deploy
+  step, source is in git if the old binary is ever needed), restarted the service.
+  Verified live: alternating touch/button toggles produced a clean monotonic
+  sequence in the state file (off/on/off/on/off, no stuck or skipped transition) and
+  the user confirmed the physical LED tracks correctly.
+* **RESOLVED 2026-10-15**: SHIFT+HOTCUE pad delete, flagged at the top of this
+  doc as "Lost with the toolkit core" (root cause found earlier the same day:
+  `ddj400-bridge.c`'s `handle_pad()`, `shifted && mode == 0` branch, still sent
+  it through the legacy command-file protocol -- `stems_pad_send_command(deck,
+  STEMS_PAD_HOTCUE_DELETE_BASE + idx)` -- that only `librx3_core.so` legacy
+  ever read; nothing reads that file under `RX3_CORE=toolkit`, so the gesture
+  went nowhere). rx3-toolkit has no equivalent module (checked `mod/modules/*`:
+  none about hot cues) but this turned out not to need one: this tree's own
+  **FLX4-era** `rbp_bridge.c` (`knobshim.so`, not loaded in the DDJ-400 stack)
+  already had a working `hotcue_delete()`/`plinn()`/`scan_plinn()`, verified
+  live once before (docs/13-raspberrypi4.md S9.11, 2026-10-01: "the cue is gone
+  and the cell stopped drawing") -- native rbp calls
+  (`ADDR_HOTCUE_DELETE`/`ADDR_ENGINE_CLEAR_HOTCUE`/`ADDR_ENGINE_IS_REGHOTCUE`,
+  already in `rbp_abi.h`), not toolkit code and not a new RE project. Ported
+  into `pointsrc.c` (`fbshim.so`); `plinn_scan.o` (no FLX4 dependency, already
+  shared with the beat-loop path's own `plinn()` use) added to `fbshim.so`'s
+  build. New touch-FIFO control `HOTCUE_DELETE_BASE` (0x40..0x47, pointsrc.c) /
+  `STEMS_TOUCH_HOTCUE_DELETE_BASE` (ddj400-bridge.c), sent only when
+  `stems_pads_touch`; the legacy command-file call stays for `RX3_CORE=legacy`.
+  Verified live: every delete logged `reg=1` (a real registered cue each time)
+  across several pads on deck 1. The brief WAIT / slower browser reload right
+  after a delete is `onHotCueDeleteEvent`'s own database persistence to the USB
+  drive -- the same half that darkens the pad LED and stops the cell redrawing
+  the cue, so skipping it would bring the cue back on a reload. Expected native
+  rbp behaviour, not something this wiring introduced; left as-is (operator's
+  call, 2026-10-15).
+* CROSSFADER CURVE in Utility (2026-10-15, requested): rbp already has a full
+  native crossfader-curve API (`mixerengine::MixerEngine::setCrossFaderCurve`/
+  `getCrossFaderCurve`, `djengine::DjEngineIF::setCrossFaderCurve`, even
+  `ui::XFaderInnards::onEv_FaderCurveSwitched(uif::IKeyInput::SW_FADER_CURVE)`)
+  -- this is native rbp functionality, not toolkit code, so no external-code
+  permission question. The ask is to add a row below UTILITY -> MIXER ->
+  CHANNEL FADER CURVE (confirmed to exist natively there) without disturbing
+  the rest. Investigated (read-only) how that submenu's rows are built: found
+  two candidate tables in rbp's own binary by searching for literal pointers
+  to `Util_EnterMenu_ChFaderCurve`/`Util_SetLine_ChFaderCurve`/
+  `Util_Reset_ChFaderCurve` (file offsets ~0x504400 and ~0x584fc0) -- one looks
+  like a 56-byte-stride per-setting record (SetLine/EnterMenu/Reset function
+  pointers + a label string address + an item index), the other a 16-byte
+  stride table that looks more like a settings-persistence/name-table than
+  the UI's own row list. Neither is understood well enough yet to safely
+  splice in a new row (where the per-submenu item count lives, and whether
+  adding one means moving every later entry, is still unknown). This is RE on
+  Pioneer's own closed firmware, not our code or even the open rx3-toolkit --
+  categorically more open-ended and riskier than anything else on this list.
+  Paused here 2026-10-15 at the operator's call; not resumed.
+* Day/light display mode: rx3-toolkit ships a whole `theme-white` module (dark/light
+  deck theme, switchable live via SHIFT+SHORTCUT or Utility's DISPLAY MODE on a real
+  XDJ-RX3) and it is **already compiled into the currently deployed**
+  `work/runtime/rx3/root/pdj/toolkit/librx3_core.so` (confirmed live:
+  `arm-linux-gnueabi-nm`/`strings` show `rx3_theme_module`, `RX3_THEME`,
+  `/tmp/rx3-theme.off`) -- so enabling it needs no new compile of toolkit code, just
+  wiring. It is gated purely behind the `RX3_THEME` env var, read as a single letter
+  (`rx3_theme_feature.h:310 theme_read_mode`): `d` = forced global dark remap
+  (kill switch: touch `/tmp/rx3-theme.off`), `l` = light from the first frame,
+  `w` = light once the player has painted once, anything else/absent = dark at
+  start and switchable (this is the one the README documents: SHIFT+SHORTCUT or
+  Utility's DISPLAY MODE). Our launcher does not currently set `RX3_THEME` at all.
+  The module's own README (`work/toolkit/mod/modules/theme-white/README.md`) flags
+  Utility switching, loaded-track waveforms and audio continuity as **unverified on
+  real hardware** by the toolkit's own author -- treat the first live test as a real
+  hardware experiment, not a known-good flip. The DDJ-400 has no SHORTCUT button, so
+  a live toggle would need either the touchscreen Utility menu or a new controller
+  mapping (no candidate identified yet). Not yet enabled or tested -- next session.

@@ -29,6 +29,7 @@
 #include "drmband.h"
 #include "syscalls.h"          /* real_open/ioctl/mmap/close: the shim interposes the real ones */
 #include "pointsrc.h"
+#include "rbp_abi.h"            /* UI_GET_UTIL_LCD_BRIGHTNESS */
 
 #include <errno.h>
 #include <stdio.h>
@@ -323,27 +324,24 @@ static int pick_plane(int fd, unsigned int index, unsigned int fourcc,
 
 /* ------------------------------------------------------------ lifecycle */
 
-int drm_band_setup(struct drm_band *b, int w, int h, int bpp)
+/* The common setup, parameterised on format: drm_band_setup() below is the
+ * original two-depth entry point menu_paint.c etc. rely on, unchanged; the
+ * brightness overlay (2026-10-15, further down) is the one caller that needs
+ * a third format -- ARGB8888, for its own per-pixel alpha -- so the fourcc
+ * and ADDFB depth that used to be derived from bpp inside this function are
+ * now the caller's to pick, and drm_band_setup() picks them exactly as before. */
+static int drm_band_setup_ex(struct drm_band *b, int w, int h, int bpp,
+                             unsigned int fourcc, unsigned int depth)
 {
     struct drm_mode_create_dumb cd;
     struct drm_mode_map_dumb md;
     struct drm_mode_fb_cmd fc;
-    unsigned int crtc_id, crtc_index, fourcc;
+    unsigned int crtc_id, crtc_index;
     int fd;
 
     memset(b, 0, sizeof *b);
     b->fd = -1;
 
-    /* The two depths menu_paint.c draws in, and no others: a third would need a
-     * palette this does not have. */
-    if (bpp == 32) {
-        fourcc = DRM_FORMAT_XRGB8888;
-    } else if (bpp == 16) {
-        fourcc = DRM_FORMAT_RGB565;
-    } else {
-        pointsrc_log("menu plane: %d bpp is not a format the band draws in", bpp);
-        return -1;
-    }
     if (w < 1 || h < 1)
         return -1;
 
@@ -392,7 +390,7 @@ int drm_band_setup(struct drm_band *b, int w, int h, int bpp)
     fc.height = (__u32)h;
     fc.pitch  = cd.pitch;
     fc.bpp    = (__u32)bpp;
-    fc.depth  = (bpp == 32) ? 24 : 16;
+    fc.depth  = depth;
     fc.handle = cd.handle;
     if (real_ioctl(fd, DRM_IOCTL_MODE_ADDFB, &fc) < 0) {
         pointsrc_log("menu plane: ADDFB %dx%d %d bpp pitch %u: %s",
@@ -447,6 +445,34 @@ int drm_band_setup(struct drm_band *b, int w, int h, int bpp)
                  " (%zu bytes) at %p",
                  b->crtc, b->plane, b->fb, w, h, bpp, b->pitch, b->map_len, b->pix);
     return 0;
+}
+
+int drm_band_setup(struct drm_band *b, int w, int h, int bpp)
+{
+    /* The two depths menu_paint.c draws in, and no others: a third would need a
+     * palette this does not have -- ARGB8888 is the brightness overlay's own
+     * entry point (drm_band_setup_argb), not this one. */
+    if (bpp == 32)
+        return drm_band_setup_ex(b, w, h, bpp, DRM_FORMAT_XRGB8888, 24u);
+    if (bpp == 16)
+        return drm_band_setup_ex(b, w, h, bpp, DRM_FORMAT_RGB565, 16u);
+    memset(b, 0, sizeof *b);
+    b->fd = -1;
+    pointsrc_log("menu plane: %d bpp is not a format the band draws in", bpp);
+    return -1;
+}
+
+/* ARGB8888, for a plane whose alpha the hardware blends against whatever is
+ * beneath it -- the brightness overlay's own format, so its darkening does
+ * not depend on how often the primary plane's content happens to redraw
+ * (drmband.c's rx3_kms_vsync()-timed per-pixel darken, tried first, flickered
+ * instead of holding steady: that hook only runs when DirectFB actually
+ * flips, so a static screen never got re-darkened and an active one got
+ * darkened-then-immediately-overwritten every flip). depth 32 is what makes
+ * the kernel's legacy ADDFB infer ARGB8888 rather than XRGB8888 for 32 bpp. */
+static int drm_band_setup_argb(struct drm_band *b, int w, int h)
+{
+    return drm_band_setup_ex(b, w, h, 32, DRM_FORMAT_ARGB8888, 32u);
 }
 
 int drm_band_show(struct drm_band *b, int x, int y)
@@ -881,6 +907,57 @@ int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes)
  * the frame top-down from the start of vblank also stays ahead of the scan (a
  * present well under a frame), which is what keeps one buffer from tearing.
  * -1 = no scanout or the wait failed: the caller presents anyway. */
+
+/* LCD BRIGHTNESS (2026-10-15): this unit has no real backlight to dim, so the
+ * Utility's 1..5 LCD BRIGHTNESS setting did nothing on this board. Simulated
+ * with a whole-screen ARGB8888 overlay plane (drm_band_setup_argb above) held
+ * a flat black at an alpha the hardware blends against the primary: 5 = plane
+ * off (no overlay at all), 1 = 75% black, evenly stepped in between. A first
+ * attempt darkened the scanout buffer's own pixels instead, timed off
+ * rx3_kms_vsync(); that hook only runs when DirectFB actually flips a new
+ * frame, so a static screen was never re-darkened (no effect) and an active
+ * one got darkened then immediately overwritten by the next flip (flicker).
+ * An overlay plane has neither problem: once shown, the compositor blends it
+ * every refresh on its own, independent of how often the primary redraws.
+ * Ticked from pointsrc.c's always-on bfx_thread (rx3_brightness_tick(),
+ * drmband.h), not from here -- this is a Utility *setting*, not a per-frame
+ * concern, and ticking it only when a flip happens would reintroduce the same
+ * latency-while-idle problem for the plane's setup/teardown. */
+static struct drm_band g_bright_overlay;
+static int g_bright_overlay_level = -1;    /* -1 = not yet read */
+
+void rx3_brightness_tick(void)
+{
+    int level;
+    unsigned int alpha, word;
+    uint32_t *p;
+    int n;
+
+    level = ((int (*)(void))UI_GET_UTIL_LCD_BRIGHTNESS)();
+    if (level < 1 || level > 5 || level == g_bright_overlay_level)
+        return;
+    g_bright_overlay_level = level;
+    if (level == 5) {
+        drm_band_hide(&g_bright_overlay);
+        pointsrc_log("brightness: LCD level 5 -> overlay off\n");
+        return;
+    }
+    alpha = ((5u - (unsigned int)level) * 1875u * 255u) / 10000u;   /* 18.75% a step */
+    if (!g_bright_overlay.pix &&
+        drm_band_setup_argb(&g_bright_overlay, g_scan.w ? g_scan.w : 1280,
+                            g_scan.h ? g_scan.h : 800) != 0) {
+        pointsrc_log("brightness: no overlay plane -- LCD BRIGHTNESS stays cosmetic\n");
+        return;
+    }
+    word = alpha << 24u;        /* black: R=G=B=0, alpha in the top byte */
+    p = (uint32_t *)g_bright_overlay.pix;
+    n = g_bright_overlay.pitch * g_bright_overlay.h;
+    while (n-- > 0)
+        *p++ = word;
+    drm_band_show(&g_bright_overlay, 0, 0);
+    pointsrc_log("brightness: LCD level %d -> overlay alpha %u/255\n", level, alpha);
+}
+
 __attribute__((visibility("default")))
 int rx3_kms_vsync(void)
 {

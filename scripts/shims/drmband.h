@@ -88,6 +88,7 @@ typedef signed int         __s32;
 
 #define DRM_FORMAT_RGB565    0x36314752   /* 'R''G''1''6' -- fb0's own format */
 #define DRM_FORMAT_XRGB8888  0x34325258   /* 'X''R''2''4' */
+#define DRM_FORMAT_ARGB8888  0x34325241   /* 'A''R''2''4' -- the brightness overlay's own alpha */
 
 struct drm_mode_modeinfo {
     __u32 clock;
@@ -274,5 +275,11 @@ int rx3_kms_mode_geom(int *w, int *h);
 
 /* The live scanout (32 bpp only) for pixel readers; -1 when there is none. */
 int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes);
+
+/* Re-reads the Utility's LCD BRIGHTNESS (1..5) and shows/hides/refills a
+ * whole-screen ARGB8888 overlay plane to match, only on a change. Cheap
+ * enough to call from a tick thread rather than a frame hook -- see its own
+ * comment in drmband.c. A no-op (logged once) if no overlay plane is free. */
+void rx3_brightness_tick(void);
 
 #endif /* RBPI4B_DRMBAND_H */

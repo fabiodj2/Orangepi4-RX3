@@ -40,6 +40,7 @@
  * is rbp and its KeyManager exists yet, so this needs no guard of its own. */
 #include "rbp_abi.h"
 #include "rbp_key.h"
+#include "plinn_scan.h"
 
 /* The channel faders the drawers drive. The *send* is rbp_key's, but a fader is
  * also the meter bridge's input, so the position has to be recorded where the
@@ -1341,6 +1342,7 @@ static int strip_shows_pads(void)
 #define STEMS_CMD_OPEN      0x20
 #define KEY_CMD_OPEN        0x21
 #define KEY_CMD_PART        0x30            /* 0x30 -1, 0x31 own key, 0x32 +1 */
+#define HOTCUE_DELETE_BASE  0x40            /* 0x40..0x47 = SHIFT+HOTCUE pad 1..8 */
 #define STEMS_TAB_X         1225
 #define STEMS_TAB_Y         407
 
@@ -1582,10 +1584,16 @@ static void stems_state_init(void)
 
 static void key_state_tick(void)
 {
-    static struct key_state_pkt last;
+    /* Gate on the actual semitone, not just its 3-state LED bucket (below /
+     * at / above the track's key): repeated presses in the same direction
+     * (-1, -2, -3, ...) stay in the same bucket, so comparing buckets alone
+     * dropped every repaint and LED refresh past the first step even though
+     * the toolkit's real pitch (and the audio) kept changing. Confirmed live
+     * 2026-10-14 by reading keyshift_decks' raw request next to this file. */
+    static int last_semi[2] = { 999, 999 };
     static uint32_t seq;
     struct key_state_pkt now;
-    int d;
+    int d, changed = 0;
 
     if (!key_decks_addr || key_state_fd < 0)
         return;
@@ -1596,14 +1604,68 @@ static void key_state_tick(void)
         int semi = (int)(req & 0xffu) - 12;
 
         now.leds[d] = semi < 0 ? 1 : semi == 0 ? 2 : 4;
+        if (semi != last_semi[d])
+            changed = 1;
+        last_semi[d] = semi;
     }
-    if (seq && !memcmp(now.leds, last.leds, 2))
+    if (seq && !changed)
         return;
     panel_refresh();
-    last = now;
     now.magic = KEY_STATE_MAGIC;
     now.sequence = ++seq;
     (void)pwrite(key_state_fd, &now, sizeof now, 0);
+}
+
+/* BEAT FX ON/OFF, the real state (2026-10-15): the DDJ-400's own ON/OFF button
+ * LED, driven by ddj400-bridge.c, used to just flip a local shadow on every
+ * press, so a touchscreen toggle of the same control (fx_zone.c's FX_ACT_POWER,
+ * which sends K_BFX straight to rbp and keeps no state of its own) left the
+ * physical LED wrong and the bridge's next press toggling the wrong way. This
+ * is independent of RX3_STEMS_PADS: Beat FX is global, not a STEMS/KEY touch
+ * concern, so it gets its own small always-on thread rather than riding
+ * stems_thread's conditional one. */
+#define BFX_STATE_FILE   "/tmp/rx3-bfx-state.bin"
+#define BFX_STATE_MAGIC  0x53584642u   /* "BFXS" */
+
+struct bfx_state_pkt { uint32_t magic, sequence; uint8_t on, reserved[3]; };
+
+static int bfx_state_fd = -1;
+
+static void bfx_state_tick(void)
+{
+    static int last_on = -1;
+    static uint32_t seq;
+    struct bfx_state_pkt now;
+    int on;
+
+    if (bfx_state_fd < 0)
+        return;
+    on = ((int (*)(void))UI_GET_MIX_BFX_ON)() ? 1 : 0;
+    if (seq && on == last_on)
+        return;
+    last_on = on;
+    memset(&now, 0, sizeof now);
+    now.magic = BFX_STATE_MAGIC;
+    now.sequence = ++seq;
+    now.on = (uint8_t)on;
+    (void)pwrite(bfx_state_fd, &now, sizeof now, 0);
+}
+
+static void *bfx_thread(void *arg)
+{
+    (void)arg;
+    bfx_state_fd = real_open(BFX_STATE_FILE, O_RDWR | O_CREAT, 0644);
+    if (bfx_state_fd < 0) {
+        pointsrc_log("bfx: open %s: %s\n", BFX_STATE_FILE, strerror(errno));
+        return NULL;
+    }
+    pointsrc_log("bfx: on/off state -> %s\n", BFX_STATE_FILE);
+    for (;;) {
+        bfx_state_tick();
+        rx3_brightness_tick();
+        usleep(50000);
+    }
+    return NULL;
 }
 
 static void stems_state_tick(void)
@@ -1678,6 +1740,142 @@ static int stems_toggle_direct(int deck, unsigned int bit)
     }
 }
 
+/* SHIFT+HOTCUE pad delete (2026-10-15): ported from this tree's own
+ * rbp_bridge.c (knobshim.so, the FLX4-era controller, not loaded in the
+ * DDJ-400 stack) where it already shipped and was verified live on the unit
+ * 2026-10-01 (docs/13-raspberrypi4.md S9.11) -- "PASS... the cue is gone and
+ * the cell stopped drawing". ddj400-bridge.c's own SHIFT+HOTCUE path used to
+ * reach this through the legacy command-file protocol (stems_pad_command_path)
+ * that only the legacy librx3_core.so ever read; since RX3_CORE=toolkit
+ * (2026-10-14) nothing reads that file, so the gesture went nowhere. This is
+ * native rbp functionality -- two direct calls into rbp's own binary, found by
+ * the previous session and recorded in rbp_abi.h (ADDR_HOTCUE_DELETE,
+ * ADDR_ENGINE_CLEAR_HOTCUE, ADDR_ENGINE_IS_REGHOTCUE) -- not toolkit code, so
+ * nothing here needs the external-code permission gate. plinn_scan.c (the
+ * PlayerInnards-candidate validator, already in this tree, unused by
+ * fbshim.so until now) is shared with the beat-loop path's own use of plinn()
+ * in rbp_bridge.c; this file gets its own copy of the scan and g_plinn because
+ * the two shims are never loaded together. */
+static void *g_plinn[2];
+
+#define PVTABLE_PLAYERINNARDS 0x004d1960UL
+
+static void scan_plinn(void)
+{
+    FILE *f;
+    char line[256];
+    char tally[256];
+    struct plinn_tally t;
+    static unsigned long long last;
+    unsigned long long now;
+
+    if (g_plinn[0] && g_plinn[1])
+        return;
+    now = shim_now_ms();
+    if (now - last < 1000)
+        return;
+    last = now;
+    memset(&t, 0, sizeof t);
+    f = fopen("/proc/self/maps", "r");
+    if (!f)
+        return;
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long s = 0, e = 0, a;
+        char perms[8];
+
+        if (sscanf(line, "%lx-%lx %7s", &s, &e, perms) != 3)
+            continue;
+        if (perms[0] != 'r' || perms[1] != 'w')
+            continue;
+        if (e <= s || (e - s) > (512UL << 20))
+            continue;
+        t.regions++;
+        for (a = (s + 3) & ~3UL; a + 0x90 <= e; a += 4) {
+            struct plinn_cand c;
+            enum plinn_refuse why;
+            int d;
+
+            t.words++;
+            if (*(volatile unsigned int *)a != PVTABLE_PLAYERINNARDS)
+                continue;
+            t.hits++;
+            c.chan = *(volatile unsigned char *)(a + PLAYERINNARDS_CHAN_OFF);
+            c.mode = *(volatile unsigned char *)(a + PLAYERINNARDS_MODE_OFF);
+            c.eng = *(volatile unsigned int *)(a + PLAYERINNARDS_ENGINE_OFF);
+            d = plinn_classify(&c, &why);
+            if (d < 0) {
+                t.refused[why]++;
+                continue;
+            }
+            t.accepted[d]++;
+            if (!g_plinn[d]) {
+                g_plinn[d] = (void *)a;
+                pointsrc_log("hotcue: PlayerInnards deck%d @%p (+0x74=%d)\n",
+                             d + 1, (void *)a, c.mode);
+            }
+        }
+    }
+    fclose(f);
+    if (!g_plinn[0] || !g_plinn[1])
+        pointsrc_log("hotcue: PlayerInnards scan: deck1=%p deck2=%p; %s\n",
+                     g_plinn[0], g_plinn[1],
+                     plinn_tally_line(tally, sizeof tally, &t));
+}
+
+static void *plinn(int deck)
+{
+    if (!g_plinn[deck])
+        scan_plinn();
+    return g_plinn[deck];
+}
+
+/* rbp's own player array, walked exactly as IUiObjManager::getPlayer() does
+ * (rbp_abi.h's UIOBJ_* constants). UiObject::Channel is 1-based, so the deck
+ * index is the array index. */
+static void *ui_player(int deck)
+{
+    void *holder, *players;
+    int n;
+
+    holder = *(void **)UIOBJ_HOLDER_GLOBAL;
+    if (!holder)
+        return NULL;
+    players = *(void **)((char *)holder + UIOBJ_PLAYERS_OFF);
+    n = *(int *)((char *)holder + UIOBJ_NPLAYERS_OFF);
+    if (!players || n <= 0 || n > 8 || deck < 0 || deck >= n)
+        return NULL;
+    return *(void **)((char *)players + 4 * deck);
+}
+
+static void hotcue_delete(int deck, int pad)
+{
+    void *p, *inn, *eng = NULL;
+
+    if (pad < 1 || pad > 8)
+        return;
+    p = ui_player(deck);
+    if (!p) {
+        pointsrc_log("hotcue: delete deck%d pad%d: no ui::Player yet\n",
+                     deck + 1, pad);
+        return;
+    }
+    ((void (*)(void *, int))ADDR_HOTCUE_DELETE)(p, pad);
+    inn = plinn(deck);
+    if (inn)
+        eng = *(void **)((char *)inn + PLAYERINNARDS_ENGINE_OFF);
+    if (eng) {
+        int reg = ((int (*)(void *, int, int))ADDR_ENGINE_IS_REGHOTCUE)
+                       (eng, deck, pad);
+        ((void (*)(void *, int, int))ADDR_ENGINE_CLEAR_HOTCUE)(eng, deck, pad);
+        pointsrc_log("hotcue: delete deck%d pad%d @%p inn=%p eng=%p reg=%d\n",
+                     deck + 1, pad, p, inn, eng, reg);
+    } else {
+        pointsrc_log("hotcue: delete deck%d pad%d @%p: no engine yet -- the"
+                     " cue is gone from rbp's data but the pad grid will keep"
+                     " drawing it\n", deck + 1, pad, p);
+    }
+}
+
 static void stems_command(const struct stems_cmd *c)
 {
     int deck = c->deck;
@@ -1693,6 +1891,10 @@ static void stems_command(const struct stems_cmd *c)
     }
     if (deck < 0 || deck > 1)
         return;
+    if (c->control >= HOTCUE_DELETE_BASE && c->control <= HOTCUE_DELETE_BASE + 7) {
+        hotcue_delete(deck, (int)(c->control - HOTCUE_DELETE_BASE) + 1);
+        return;
+    }
     if (c->control >= KEY_CMD_PART && c->control <= KEY_CMD_PART + 2) {
         if (!key_fire_fn) {
             pointsrc_log("key: deck%d: keyshift_fire not found, dropped\n", deck + 1);
@@ -3418,6 +3620,14 @@ int pointsrc_start(void)
             (stems_started = 1) &&
             pthread_create(&stems_tid, NULL, stems_thread, NULL) == 0)
             pthread_detach(stems_tid);
+    }
+    {
+        static int bfx_started;
+        pthread_t bfx_tid;
+
+        if (!bfx_started && is_rbp_process() && (bfx_started = 1) &&
+            pthread_create(&bfx_tid, NULL, bfx_thread, NULL) == 0)
+            pthread_detach(bfx_tid);
     }
     /* POINT_KIND=none means "no pointer at all" — the display-only bring-up
      * setting. Returning before creating the thread keeps that case free of a
