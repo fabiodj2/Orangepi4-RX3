@@ -22,6 +22,66 @@ The full engineering record — every measurement, decision and rollback — is
 
 ---
 
+## Screenshots
+
+Captured live off the running unit's own scanout (`scripts/rk3399/capture-screens.py`
+drives rbp's key API through the keyshim FIFO and pulls each frame through
+`fbshim.so`'s screenshot tool — see [docs/rk3399/screenshots](docs/rk3399/screenshots)
+for the full set and how to reproduce it).
+
+<table>
+<tr>
+<td width="50%">
+
+**Deck view**, HOT CUE pads, BEAT FX panel
+<img src="docs/rk3399/screenshots/deck-view.png" width="100%">
+</td>
+<td width="50%">
+
+**UTILITY → MIXER**, the fixed CHANNEL FADER CURVE row
+<img src="docs/rk3399/screenshots/utility-mixer-settings.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Library browse** (USB1, sorted by file name)
+<img src="docs/rk3399/screenshots/browse-library.png" width="100%">
+</td>
+<td width="50%">
+
+**Library + INFO panel**, track metadata and LOAD 1/2
+<img src="docs/rk3399/screenshots/library-track-info.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**SOURCE** device picker
+<img src="docs/rk3399/screenshots/source-device-picker.png" width="100%">
+</td>
+<td width="50%">
+
+**LINK** source selector
+<img src="docs/rk3399/screenshots/link-select-source.png" width="100%">
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**TAG LIST**
+<img src="docs/rk3399/screenshots/tag-list.png" width="100%">
+</td>
+<td width="50%">
+
+**Pad banks**: BEAT LOOP / SLIP LOOP / BEAT JUMP (deck 1)
+<img src="docs/rk3399/screenshots/pads-beatloop-d1.png" width="100%">
+</td>
+</tr>
+</table>
+
+---
+
 ## Specifications
 
 | | |

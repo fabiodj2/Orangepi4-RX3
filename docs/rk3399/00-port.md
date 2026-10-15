@@ -636,6 +636,19 @@ only, at the operator's call.
     grid precisely: rows start at y=52, 52 px tall each, label column
     x8-734, value column x736-1280 -- useful for this and any future
     screen-layout work.
+  - **2026-10-15**: that one-off capture grew into
+    `scripts/rk3399/capture-screens.py`, which drives rbp's key API through
+    the keyshim FIFO (`/tmp/rb-keys.fifo`, independent of the real DDJ-400's
+    `/tmp/rb-ctrl.fifo`, so it never touches a live controller) to walk the
+    UI through a known-good, hardware-verified sequence of screens and pull
+    one screenshot each, converted with the new `scripts/rk3399/bmp2png.py`
+    (pure stdlib, no Pillow/ImageMagick on the board). Ten screens now live
+    in `docs/rk3399/screenshots/` and in the README gallery. Mapping which
+    controller keys actually change the screen (and which, like `MENU` and
+    `REKORDBOX`, turned out not to do anything in this build) is recorded in
+    that script's own header comment -- the live UTILITY screen itself still
+    has no confirmed key and was captured by hand via the touchscreen's **MY
+    SETTINGS MENU** button, same as above.
   - This is RE on Pioneer's own closed firmware, not our code or even the
     open rx3-toolkit -- categorically more open-ended and risky than anything
     else on this list. Paused at the operator's call, 2026-10-15.
