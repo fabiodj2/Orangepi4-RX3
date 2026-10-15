@@ -452,6 +452,44 @@ same latency-while-idle problem for setup/teardown) -- only acts on an actual
 level change, and skips the plane entirely at level 5. Verified live: stepping
 all five levels both directions held steady with no flicker and no stall.
 
+## CPU core balance, measured 2026-10-15 (not changed, investigation only)
+
+Operator's observation: everything looks concentrated on the A72 cores (4,5)
+in `btop`, A53 cores (0-3) look idle. Measured properly (10 s window,
+`/proc/stat` deltas per core and `/proc/<pid>/task/<tid>/stat` utime+stime
+deltas per thread, not `ps`'s lifetime-average `%CPU`):
+
+* A53 cores (0-3): ~19-21% busy each -- real, legitimate work (`FGPR:1`/
+  `FGPR:2` decoders migrate across 1/2/3, `PcmReader:0/1`, DB/jog/UI tasks),
+  not idle, but with real spare capacity (roughly 80% headroom x4 cores).
+* A72 pair (4,5): `gui_task` (pinned to the set `{4,5}` by `GUI_CPUS`, not to
+  one core) uses ~74% of a core's capacity by itself; `JuceALSA` (SCHED_FIFO
+  45, no CPU pin) adds ~14%. Two consecutive measurements disagreed sharply
+  on whether cpu4 or cpu5 carried the load (11%/75% vs. 74%/37%) -- both
+  threads landed on cpu4 at both sample instants in the second run, yet
+  cpu4's own busy% was low and cpu5's was high, which only makes sense if
+  `gui_task` spent most of the 10 s window on cpu5 and only touched cpu4 at
+  the two instants sampled. Conclusion: `gui_task` alternates between its two
+  allowed A72 cores over time (a single thread cannot span two cores at
+  once), saturating whichever one it currently sits on; the "idle-looking"
+  A72 core at any given moment is just the one `gui_task` is not on right
+  now, not spare capacity to plan around.
+
+`gui_task`'s need for an A72 core is already measured and load-bearing (2026-10-13:
+unpinned/A53 averaged 57.4 fps with drops under 57 nine seconds out of thirty;
+pinned to {4,5}, 59.9 avg, none under 57) -- it cannot be moved to the A53s
+without bringing that back, and it is single-threaded so splitting its own
+work across cores is not an option. The open question for a future session is
+narrower: whether `gui_task` and `JuceALSA` colliding on the *same* A72 core
+at the same moment (both sampled on cpu4 together once) causes any audible/
+visible jitter, and whether giving each its own single dedicated A72 core
+(rather than sharing the `{4,5}` set) helps without reintroducing the
+click regression this same session already hit once from pinning `JuceALSA`
+alone away from the A72s (`RX3-RBPI4B-RK3399`'s own `start-rk3399.sh` comment:
+"pinning JuceALSA alone to cpu5 and the rest of rbp to the A53s... constant
+clicks: the decoders need the A72s"). Not attempted this session -- measurement
+only, at the operator's call.
+
 ## Open
 
 * Remaining audio clicks: RT priority for `JuceALSA` applied (`rt_group_sched=0` in
@@ -531,26 +569,76 @@ all five levels both directions held steady with no flicker and no stall.
   the cue, so skipping it would bring the cue back on a reload. Expected native
   rbp behaviour, not something this wiring introduced; left as-is (operator's
   call, 2026-10-15).
-* CROSSFADER CURVE in Utility (2026-10-15, requested): rbp already has a full
-  native crossfader-curve API (`mixerengine::MixerEngine::setCrossFaderCurve`/
+* CROSSFADER CURVE in Utility (2026-10-15, requested, paused -- picked back
+  up and paused again the same day): rbp already has a full native
+  crossfader-curve API (`mixerengine::MixerEngine::setCrossFaderCurve`/
   `getCrossFaderCurve`, `djengine::DjEngineIF::setCrossFaderCurve`, even
   `ui::XFaderInnards::onEv_FaderCurveSwitched(uif::IKeyInput::SW_FADER_CURVE)`)
-  -- this is native rbp functionality, not toolkit code, so no external-code
-  permission question. The ask is to add a row below UTILITY -> MIXER ->
-  CHANNEL FADER CURVE (confirmed to exist natively there) without disturbing
-  the rest. Investigated (read-only) how that submenu's rows are built: found
-  two candidate tables in rbp's own binary by searching for literal pointers
-  to `Util_EnterMenu_ChFaderCurve`/`Util_SetLine_ChFaderCurve`/
-  `Util_Reset_ChFaderCurve` (file offsets ~0x504400 and ~0x584fc0) -- one looks
-  like a 56-byte-stride per-setting record (SetLine/EnterMenu/Reset function
-  pointers + a label string address + an item index), the other a 16-byte
-  stride table that looks more like a settings-persistence/name-table than
-  the UI's own row list. Neither is understood well enough yet to safely
-  splice in a new row (where the per-submenu item count lives, and whether
-  adding one means moving every later entry, is still unknown). This is RE on
-  Pioneer's own closed firmware, not our code or even the open rx3-toolkit --
-  categorically more open-ended and riskier than anything else on this list.
-  Paused here 2026-10-15 at the operator's call; not resumed.
+  -- native rbp functionality, not toolkit code, no external-code permission
+  question. The ask: a row below UTILITY -> MIXER -> CHANNEL FADER CURVE
+  (confirmed to exist natively there) without disturbing the rest.
+  - **The native row table, fully understood**: a flat array of 56-byte
+    records at file offset ~0x504370..0x5046xx in this build (found by
+    searching for literal pointers to `Util_EnterMenu_ChFaderCurve` etc.),
+    one per Utility setting, laid out MIXER-category-header, EQUALIZER CURVE,
+    CHANNEL FADER CURVE, MASTER ATTENUATOR, ... with no gaps between records.
+    Each record: `{ int, InitItem_fn (always Util_InitItem_Dummy), SetLine_fn,
+    StartEdit_fn (shared), SelMenu_fn (shared), IsModified_fn (shared),
+    EnterMenu_fn, IsGrey_fn (shared), Reset_fn, label_str_ptr, strSet_ptr, int,
+    0xffffffff, 0xffffffff }` -- a category header uses `Util_SetLine_Blank` +
+    `Util_EnterMenu_Dummy` and its own category-name string.
+  - **Shifting this table to insert a row is not just risky, it is
+    structurally impossible without Pioneer's own build toolchain**: this is
+    a fixed-address, non-PIE, statically linked binary, and the whole project
+    (ours included, every fix tonight) depends on hundreds of other hardcoded
+    absolute addresses throughout the binary. Inserting bytes anywhere shifts
+    every byte after it, breaking every such reference program-wide. Searched
+    a wide range for a genuinely unused/reserved placeholder row (common in
+    embedded firmware) to repurpose instead -- found none; the only
+    `Util_SetLine_Blank` records found are the two category headers
+    themselves (MIXER, GENERAL), not spare slots.
+  - **The right technique exists and was found, in rx3-toolkit's own
+    `theme-white` module** (`rx3_theme_utility.h`,
+    `utility_install_theme_row()`): it does not shift anything. It `mmap()`s
+    a **fresh copy** of the category's row array plus one new row spliced in
+    at a chosen index, then rewrites a handful of literal-pool constants
+    scattered through the Utility-list code (found 6 copies of the row-count
+    constant and 1 of the array-pointer constant, each individually
+    guard-checked and restorable via `framework->write_guarded`) so every
+    reference now resolves to the new copy instead of the original. This
+    needs no toolkit dependency in principle -- the same technique could run
+    from our own shim against rbp's own addresses directly.
+  - **Blocked on**: theme-white's hardcoded addresses are calibrated for a
+    different rbp build than ours. Its guard expects `ulUtilityItemNum ==
+    33`; this build's static value is **14**. Live-confirmed 2026-10-15 that
+    the module may not even be installing its own row right now: a fresh
+    restart's toolkit log (`rx3-stems.log`) never prints `module configured:
+    theme-white` at all, while `stems`/`key-match`/`keyshift`/etc. all do --
+    so the DARK/LIGHT switching seen earlier in this session may have come
+    only from the separate SHIFT+SHORTCUT key path (`theme_key()`, a much
+    lower bar: just `register_key()` succeeding), not from a working Utility
+    row. `ulUtilityItemNum`'s table (0x5140bc) also does not look like the
+    MIXER table's 56-byte-record shape when read directly -- it is very
+    likely a different, smaller category's table, not MIXER's.
+  - **Next session, if picked up**: (1) first settle whether theme-white's
+    own Utility row ever genuinely installs on this board, since the `33` vs
+    `14` mismatch and the missing "module configured" log line both say no;
+    (2) separately, find the MIXER category's own count/array literal-pool
+    addresses (not theme-white's, which target a different category) by the
+    same method -- locate MIXER's own count global (analogous to
+    `ulUtilityItemNum` but for this table), then search the binary for
+    literal references to it, the same way `Util_EnterMenu_ChFaderCurve`
+    etc. were found tonight.
+  - **Tooling now in place either way**: a one-off screenshot capture
+    (`fbshim.so`'s `screenshot_tick()`, triggered by touching
+    `/tmp/rx3-screenshot.request`, writes a 24-bit BMP of the live scanout to
+    `/tmp/rx3-screenshot.bmp`) was used to measure the Utility list's pixel
+    grid precisely: rows start at y=52, 52 px tall each, label column
+    x8-734, value column x736-1280 -- useful for this and any future
+    screen-layout work.
+  - This is RE on Pioneer's own closed firmware, not our code or even the
+    open rx3-toolkit -- categorically more open-ended and risky than anything
+    else on this list. Paused at the operator's call, 2026-10-15.
 * Day/light display mode: rx3-toolkit ships a whole `theme-white` module (dark/light
   deck theme, switchable live via SHIFT+SHORTCUT or Utility's DISPLAY MODE on a real
   XDJ-RX3) and it is **already compiled into the currently deployed**

@@ -1651,6 +1651,82 @@ static void bfx_state_tick(void)
     (void)pwrite(bfx_state_fd, &now, sizeof now, 0);
 }
 
+/* One-off screenshot, for measuring where to draw a new control against a
+ * live screen (2026-10-15, the CROSSFADER CURVE row): touch
+ * /tmp/rx3-screenshot.request and the next tick dumps the live scanout
+ * (rx3_kms_peek(), the same buffer strip_page() reads) to a 24-bit BMP,
+ * top-down so no row-flip is needed, and removes the request file. Not a
+ * permanent feature -- a debug aid, left in rather than stripped out so the
+ * next measurement does not need this plumbing rebuilt. */
+#define SCREENSHOT_REQUEST "/tmp/rx3-screenshot.request"
+#define SCREENSHOT_FILE    "/tmp/rx3-screenshot.bmp"
+
+static void screenshot_tick(void)
+{
+    const void *base;
+    int w, h, pitch, fd, y, probe;
+    unsigned char filehdr[14], infohdr[40];
+    uint32_t rowbytes, filesize, dataoff;
+
+    /* real_open()+close() rather than stat(): this chroot's libc has no
+     * plain stat (glibc213-compat.h's fstat note applies here too). */
+    probe = real_open(SCREENSHOT_REQUEST, O_RDONLY, 0);
+    if (probe < 0)
+        return;
+    real_close(probe);
+    if (rx3_kms_peek(&base, &w, &h, &pitch) < 0 || w <= 0 || h <= 0) {
+        pointsrc_log("screenshot: no live scanout\n");
+        unlink(SCREENSHOT_REQUEST);
+        return;
+    }
+    rowbytes = ((unsigned int)w * 3u + 3u) & ~3u;
+    dataoff = 14u + 40u;
+    filesize = dataoff + rowbytes * (unsigned int)h;
+    memset(filehdr, 0, sizeof filehdr);
+    filehdr[0] = 'B'; filehdr[1] = 'M';
+    memcpy(filehdr + 2, &filesize, 4);
+    memcpy(filehdr + 10, &dataoff, 4);
+    memset(infohdr, 0, sizeof infohdr);
+    {
+        uint32_t v;
+        v = 40u; memcpy(infohdr + 0, &v, 4);
+        v = (uint32_t)w; memcpy(infohdr + 4, &v, 4);
+        v = (uint32_t)(-h); memcpy(infohdr + 8, &v, 4);   /* negative: top-down */
+        infohdr[12] = 1; infohdr[13] = 0;                 /* planes = 1 */
+        infohdr[14] = 24; infohdr[15] = 0;                /* bitcount = 24 */
+    }
+    fd = real_open(SCREENSHOT_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        pointsrc_log("screenshot: open %s: %s\n", SCREENSHOT_FILE, strerror(errno));
+        unlink(SCREENSHOT_REQUEST);
+        return;
+    }
+    (void)write(fd, filehdr, sizeof filehdr);
+    (void)write(fd, infohdr, sizeof infohdr);
+    {
+        unsigned char *row = malloc(rowbytes);
+
+        if (row) {
+            for (y = 0; y < h; y++) {
+                const unsigned char *src = (const unsigned char *)base + (size_t)y * (size_t)pitch;
+                int x;
+
+                memset(row, 0, rowbytes);
+                for (x = 0; x < w; x++) {
+                    row[x * 3 + 0] = src[x * 4 + 0];   /* B */
+                    row[x * 3 + 1] = src[x * 4 + 1];   /* G */
+                    row[x * 3 + 2] = src[x * 4 + 2];   /* R */
+                }
+                (void)write(fd, row, rowbytes);
+            }
+            free(row);
+        }
+    }
+    real_close(fd);
+    unlink(SCREENSHOT_REQUEST);
+    pointsrc_log("screenshot: %dx%d -> %s\n", w, h, SCREENSHOT_FILE);
+}
+
 static void *bfx_thread(void *arg)
 {
     (void)arg;
@@ -1663,6 +1739,7 @@ static void *bfx_thread(void *arg)
     for (;;) {
         bfx_state_tick();
         rx3_brightness_tick();
+        screenshot_tick();
         usleep(50000);
     }
     return NULL;
