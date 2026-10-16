@@ -96,6 +96,11 @@ unsigned int menu_pixel(int bpp, int cls)
     case MENU_BTN_PRESSED:   return MENU_TRIP(bpp, 0, 160, 255);  /* the accent */
     case MENU_LABEL:         return MENU_TRIP(bpp, 240, 242, 246);
     case MENU_LABEL_PRESSED: return MENU_TRIP(bpp, 0, 20, 40);    /* dark on the accent */
+    /* RECORDING RED, bright enough to read as "warning" against the band's near-
+     * black bed and the ordinary 200/204/210 border it replaces -- a saturated
+     * red rather than the accent blue, so an operator who glances at this one
+     * button cannot mistake it for merely pressed. */
+    case MENU_BORDER_BLINK:  return MENU_TRIP(bpp, 235, 30, 30);
     /* A button that cannot be pressed: the same two colours pulled down far enough
      * that the ink is unmistakably present and unmistakably not a choice. The label
      * is the one that carries it -- a dim face with bright ink would read as a
@@ -407,10 +412,18 @@ static int class_in_layout(const struct menu_layout *L, int fx, int fy, int pres
      * BEFORE the pressed class, so a finger on a button turns its face and its label
      * and leaves the outline white -- which is also what keeps every pixel a witness
      * samples independent of `pressed`, and so what keeps the witness's expected
-     * value stable while a button is held. */
+     * value stable while a button is held.
+     *
+     * menu_blink() is asked here too (item 7, 2026-10-16): the one button it names
+     * gets this ring in red instead of white, for as long as pointsrc.c keeps
+     * naming it. No existing witness point samples the eighth column (wcol[]
+     * below lists seven), so this cannot disturb the damage witness on the
+     * original seven -- and a caller that never names a button (menu_blink()
+     * returning 0, true of every test here unless it calls menu_set_blink())
+     * gets exactly the old MENU_BORDER on all eight, byte for byte. */
     if (fx == L->bx0[i] + MENU_BTN_PAD_PX || fx == L->bx1[i] - MENU_BTN_PAD_PX ||
         fy == L->by0 || fy == L->by1)
-        return MENU_BORDER;
+        return (btn == menu_blink()) ? MENU_BORDER_BLINK : MENU_BORDER;
     /* The label band is the only place a glyph can be, and the guard is exact --
      * menu_label_cov() rejects everything outside it itself, including a label the
      * centring pushed past its button. Without it, EVERY pixel of the band pays the
@@ -570,13 +583,15 @@ static unsigned int pixel_value(const struct menu_view *v, const struct menu_lay
 unsigned int menu_value_at(const struct menu_view *v, int fx, int fy, int pressed)
 {
     struct menu_layout L;
-    unsigned int pal[8];
+    /* 9, not 8, since MENU_BORDER_BLINK joined the band's own classes
+     * (NONE..BORDER_BLINK) 2026-10-16. */
+    unsigned int pal[9];
     int i;
 
     if (!menu_view_ok(v))
         return 0;
     menu_layout_make(v, &L);
-    for (i = 0; i < 8; i++)
+    for (i = 0; i < 9; i++)
         pal[i] = menu_pixel(v->bpp, i);
     return pixel_value(v, &L, pal, fx, fy, pressed);
 }
@@ -657,7 +672,9 @@ unsigned int menu_get(const struct menu_view *v, int fx, int fy)
 void menu_paint_cols(const struct menu_view *v, int pressed, unsigned int mask)
 {
     struct menu_layout L;
-    unsigned int pal[8];
+    /* 9, not 8, since MENU_BORDER_BLINK joined the band's own classes
+     * (NONE..BORDER_BLINK) 2026-10-16. */
+    unsigned int pal[9];
     int fx, fy, i;
 
     if (!menu_view_ok(v))
@@ -666,7 +683,7 @@ void menu_paint_cols(const struct menu_view *v, int pressed, unsigned int mask)
 
     /* The palette is a pure function of (bpp, class); resolving it once per paint
      * keeps a switch out of the per-pixel path. */
-    for (i = 0; i < 8; i++)
+    for (i = 0; i < 9; i++)
         pal[i] = menu_pixel(v->bpp, i);
 
     mask &= (1u << MZ_COLS) - 1u;

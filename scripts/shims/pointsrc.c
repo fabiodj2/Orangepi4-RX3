@@ -245,8 +245,14 @@ static int  menu_mouse = 0;
  * survives the promotion -- it is the instrument, and the next unnamed key will
  * want it again. */
 static const int menu_key[MZ_COLS] = {
-    K_SOURCE, K_BROWSE, K_TAGLIST, K_PLAYLIST, K_SEARCH, K_MENU, K_USBSTOP
+    K_SOURCE, K_BROWSE, K_TAGLIST, K_PLAYLIST, K_SEARCH, K_MENU, K_USBSTOP,
+    K_MASTER_REC_UI
 };
+
+/* REC's own column number (1-based, menu_zone.c's numbering), for
+ * master_rec_blink_tick() below -- named here rather than counted there, since
+ * it is this array's own last slot that says so. */
+#define MENU_BTN_REC MZ_COLS
 
 /* Which of the keys above rbp only finishes on when it sees a SECOND edge. One
  * entry today, so this is a predicate and not a table -- but it is asked by keycode
@@ -286,6 +292,12 @@ static int menu_key_needs_repeat(int code)
  * read rather than the shim. `grep POINT_MENU /opt/rblive4/start-rb.sh` is the
  * one-line check. */
 static int  menu_key_eff[MZ_COLS];
+
+/* Moved up from the MASTER REC block below (item 7, 2026-10-15): menu_fire()
+ * posts to this file for the REC column, and a macro has to be defined before
+ * its use textually. The full MASTER_REC_* block, including this file's other
+ * reader/writer, lives together further down. */
+#define MASTER_REC_TOGGLE_REQUEST "/tmp/rx3-master-rec-toggle.request"
 
 #define POINT_LOG "/tmp/pointsrc.log"
 
@@ -789,6 +801,28 @@ static void menu_fire(int button, int held_ms)
                      prompt_cell_text(&S, PR_CELL_USB1),
                      S.live[1] ? "ready" : "absent",
                      prompt_cell_text(&S, PR_CELL_USB2));
+        return;
+    }
+
+    /* THE EIGHTH COLUMN TOGGLES MASTER REC INSTEAD OF SENDING A KEY -- the
+     * operator's own ask for a touchscreen way in (item 7), beside the DDJ-400's
+     * SHIFT-hold-3s gesture rather than instead of it: both post to the same
+     * MASTER_REC_TOGGLE_REQUEST file and master_rec_toggle_tick() (above) does the
+     * one real piece of work, deciding start vs stop from getRecordingStatus() and
+     * calling prepareRecording()/startRecording() or stopRecording(). This is by
+     * keycode, not by column, the same reason the USB STOP branch above is: a
+     * POINT_MENU_KEY_EXTRA override that repoints this column loses the toggle,
+     * and a column that gained K_MASTER_REC_UI some other way would get it. */
+    if (code == K_MASTER_REC_UI) {
+        int fd = real_open(MASTER_REC_TOGGLE_REQUEST, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+        if (fd >= 0) {
+            real_close(fd);
+            pointsrc_log("pointsrc: menu '%s' -> MASTER REC toggle requested", label);
+        } else {
+            pointsrc_log("pointsrc: menu '%s' -> MASTER REC toggle request failed: %s",
+                         label, strerror(errno));
+        }
         return;
     }
 
@@ -1672,7 +1706,10 @@ static void bfx_state_tick(void)
  *     in. */
 #define MASTER_REC_STATE_FILE  "/tmp/rx3-master-rec-state.bin"
 #define MASTER_REC_STATE_MAGIC 0x43455252u   /* "RREC" */
-#define MASTER_REC_TOGGLE_REQUEST "/tmp/rx3-master-rec-toggle.request"
+/* MASTER_REC_TOGGLE_REQUEST itself is #defined earlier in this file, beside
+ * menu_key_eff -- menu_fire() posts to it and is itself defined ahead of this
+ * point, and a macro has to be in scope textually, not just declared first in
+ * spirit. */
 
 struct master_rec_state_pkt { uint32_t magic, sequence; uint8_t recording, reserved[3]; };
 
@@ -1706,6 +1743,30 @@ static void master_rec_state_tick(void)
     now.recording = (uint8_t)recording;
     (void)pwrite(master_rec_state_fd, &now, sizeof now, 0);
     pointsrc_log("master rec: status -> %s\n", recording ? "recording" : "idle");
+}
+
+/* The menu band's own REC button pulses red while recording (item 7, 2026-10-16,
+ * the operator's own ask: "fique com uma referencia de barra em volta da letra
+ * REC... em vermelho pulsando a cada segundo"). A 50/50 duty cycle on
+ * shim_now_ms()'s own clock -- no state of this function's own to drift, so a
+ * tick that is late or skipped still lands on the correct half of the second
+ * rather than compounding an error. Idle just forces the button off once
+ * (menu_set_blink() of 0 beyond the first idle tick is a harmless repeat), the
+ * same shape master_rec_state_tick() above already uses to log a transition and
+ * not every tick. */
+static void master_rec_blink_tick(void)
+{
+    static int was_recording;
+    int recording = master_rec_status();
+
+    if (!recording) {
+        if (was_recording)
+            menu_set_blink(MENU_BTN_REC, 0);
+        was_recording = 0;
+        return;
+    }
+    was_recording = 1;
+    menu_set_blink(MENU_BTN_REC, (shim_now_ms() % 1000ULL) < 500ULL);
 }
 
 /* First USB slot's mount point as seen from inside rbp's own chroot (matches
@@ -1880,6 +1941,7 @@ static void *bfx_thread(void *arg)
         touch_inject_tick();
         master_rec_state_tick();
         master_rec_toggle_tick();
+        master_rec_blink_tick();
         usleep(50000);
     }
     return NULL;

@@ -195,6 +195,7 @@ struct menu_map {
     int  ok;                     /* 1 = mapped and drawable, 0 = not yet */
     int  painted_open;           /* the panel was open at the last tick */
     int  painted_pressed;        /* ...and this is the button it was painted with */
+    int  painted_blink;          /* ...and this is menu_blink()'s value it was blitted with */
     int  paints;                 /* full passes since the process started */
     int  verbose;                /* MENU_VERBOSE: log every pass and what it was */
 
@@ -462,6 +463,14 @@ struct menu_map {
     void  *back;                 /* the classifier's scratch; never read by a blitter */
     size_t img_bytes;
     int    front_pressed;
+    /* front_blink/build_blink: menu_blink()'s own value, same shape as front_pressed
+     * but for REC's recording indicator (item 7, 2026-10-16) rather than a finger.
+     * menu_build() captures menu_blink() once into build_blink, so the value it
+     * paints with and the value menu_publish() files under front_blink afterwards
+     * cannot disagree even if the other thread calls menu_set_blink() in the
+     * meantime -- the same reason `pressed` is a parameter and not re-read. */
+    int    front_blink;
+    int    build_blink;
     int    front_valid;          /* 0 until the first classification succeeds */
 };
 
@@ -2195,8 +2204,9 @@ static int menu_build(int pressed)
         }
     }
 
+    g.build_blink = menu_blink();
     full = !g.front_valid;
-    if (!full && pressed == g.front_pressed)
+    if (!full && pressed == g.front_pressed && g.build_blink == g.front_blink)
         return -1;               /* the published image is already this one */
 
     cv = menu_cache_view(g.back);
@@ -2229,6 +2239,13 @@ static int menu_build(int pressed)
             mask |= 1u << (g.front_pressed - 1);
         if (pressed > 0)
             mask |= 1u << (pressed - 1);
+        /* The blink column, old and new, same reasoning as the two lines above:
+         * a column whose border just turned red or just turned back has to be
+         * in the repaint mask even when nobody's finger moved. */
+        if (g.front_blink > 0)
+            mask |= 1u << (g.front_blink - 1);
+        if (g.build_blink > 0)
+            mask |= 1u << (g.build_blink - 1);
         menu_paint_cols(&cv, pressed, mask);
         /* The interval covers the copy as well as the paint: they are one pass over
          * the image and the number worth having is what the transition cost, not
@@ -2250,6 +2267,7 @@ static void menu_publish(int pressed)
     g.front = g.back;
     g.back = t;
     g.front_pressed = pressed;
+    g.front_blink = g.build_blink;
     g.front_valid = 1;
 }
 
@@ -2583,7 +2601,7 @@ static void menu_band_present(void)
 
 void menu_frame_tick(void)
 {
-    int open, fp;
+    int open, fp, fb;
 
     if (!g.ok)
         return;
@@ -2722,7 +2740,11 @@ void menu_frame_tick(void)
          * the front's own image is what keeps that from reading as damage and
          * turning into a repaint storm. */
         fp = g.front_pressed;
-        if (!g.painted_open || fp != g.painted_pressed ||
+        /* fb, same shape as fp: the front holds a published image built for
+         * menu_blink()'s value at the time, and a blit must notice when that
+         * changed even though nobody's finger did (REC pulsing, item 7). */
+        fb = g.front_blink;
+        if (!g.painted_open || fp != g.painted_pressed || fb != g.painted_blink ||
             !menu_intact(&g.view, fp)) {
             long t0 = menu_now_us();
             long us;
@@ -2757,6 +2779,7 @@ void menu_frame_tick(void)
             g.paints++;
             g.painted_open = 1;
             g.painted_pressed = fp;
+            g.painted_blink = fb;
         }
         /* After the paint, never before it: what goes on the glass the first time
          * must be the finished band and not the empty buffer the plane was

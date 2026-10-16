@@ -277,6 +277,16 @@
  * usable press. Here the press is load-bearing. */
 #define K_USBSTOP    0x8002
 
+/* NOT AN RBP KEYCODE. The menu band's eighth column, REC (menu_zone.c), fires this
+ * sentinel and pointsrc.c's menu_fire() catches it by value -- same shape as the
+ * K_USBSTOP branch just above it -- and posts to MASTER_REC_TOGGLE_REQUEST instead
+ * of sending a key: there is no native rbp key for this, the native call is
+ * djengine::DjEngineIF's own (DJ_ENGINE_START_RECORDING et al., below), reached
+ * the same way the DDJ-400's SHIFT-hold gesture reaches it. Picked well above any
+ * real keycode in this file (the highest, K_USBSTOP, is 0x8002) so a future real
+ * keycode can never collide with it by chance. */
+#define K_MASTER_REC_UI 0x7fffffffL
+
 /* THE TWO UsbStorageManager OBJECTS, and how to reach them -- what the USB STOP
  * chooser's two device rows are lit from (prompt_zone.c, pointsrc.c).
  *

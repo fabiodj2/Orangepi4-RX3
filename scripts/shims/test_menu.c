@@ -116,13 +116,21 @@ static unsigned short fb16[FB_MAX_W * FB_MAX_H];
  * shipped on 2026-10-07 and taken back off the glass the same day, and while it was in
  * it refused every picture under 823 px, so the 800- and 640-wide shapes went with it
  * -- this list carried them as refused and a 1024x480 was added to keep a 480-row
- * usable shape in the walk. The Decker bake puts the floor back at 605 px, so they are
- * usable again. A WIDTH refusal is not a height one, which is why the two lists are
- * kept apart: this one is the height floor and the width floor is a sweep below. */
+ * usable shape in the walk. The Decker bake puts the floor back at 605 px, so they
+ * were usable again. A WIDTH refusal is not a height one, which is why the two lists
+ * are kept apart: this one is the height floor and the width floor is a sweep below.
+ *
+ * 640x480 MOVED BACK TO REFUSED, 2026-10-16, and for the same column-count reason the
+ * two JH/Decker entries above document: REC, the menu's eighth column, narrowed every
+ * column from 1280/7 (~182 px) to 1280/8 (160 px, exactly -- the one gain of the eighth
+ * column, see menu_zone.h), which moved the width floor the labels-fit sweep below
+ * computes up past 640 (its own column holds 80 px at 640 wide, 70 inner, and "USB
+ * STOP" is 76). A width refusal is still a decision and not drift; it is just a
+ * different decision now that there is an eighth word to fit. */
 struct tsize { int w, h, usable; };
 static const struct tsize TSIZES[] = {
     { 1280, 800, 1 }, { 1280, 720, 1 }, { 1024, 768, 1 }, { 1024, 600, 1 },
-    {  800, 480, 1 }, {  800, 600, 1 }, {  640, 480, 1 }, {  480, 320, 0 },
+    {  800, 480, 1 }, {  800, 600, 1 }, {  640, 480, 0 }, {  480, 320, 0 },
     { 1920, 1080, 1 }, { 1366, 768, 1 }
 };
 #define TSIZE_N ((int)(sizeof TSIZES / sizeof TSIZES[0]))
@@ -1413,15 +1421,15 @@ static void test_labels_fit(void)
          * narrowest shape this port can still be asked to draw the band on. 480 wide
          * is the one the 19 px atlas spends -- 68 px columns against a 76 px "USB
          * STOP" -- and it is pinned so that the refusal stays a decision rather than
-         * drift. 800 sits in the bracket as well as 640, because the JH bake's 823 px
-         * floor spent both of them on 2026-10-07 and the point of these three lines is
-         * that going back to Decker gave them back. */
+         * drift. 800 sits in the bracket; 640 moved out of it 2026-10-16, with REC's
+         * eighth column (see TSIZES' own comment above) pushing the floor just past
+         * it -- 640/8 = 80 px columns, 70 inner, under "USB STOP"'s 76. */
         v = mkview(1280, 800);
         CHECK(menu_view_ok(&v), "1280 wide was refused");
         v = mkview(800, 800);
         CHECK(menu_view_ok(&v), "800 wide was refused");
         v = mkview(640, 800);
-        CHECK(menu_view_ok(&v), "640 wide was refused");
+        CHECK(!menu_view_ok(&v), "640 wide was drawn on with a clipped label");
         v = mkview(480, 800);
         CHECK(!menu_view_ok(&v), "480 wide was drawn on with a clipped label");
     }
@@ -1448,8 +1456,14 @@ static void test_labels_fit(void)
  * readable when it fails. */
 static void test_paint_matches_value(void)
 {
+    /* All five must be usable sizes: menu_paint() silently draws nothing on a
+     * refused view (menu_paint_cols()'s own guard) while menu_value_at() has no
+     * such guard, so a refused entry here would compare a real computed value
+     * against a canvas menu_paint() never touched and fail for a reason this test
+     * is not about. 640x480 was swapped for 1024x768 2026-10-16 when it fell
+     * below the width floor (REC's eighth column, see TSIZES' comment above). */
     static const struct { int w, h; } sizes[] = {
-        { 1280, 800 }, { 1024, 600 }, { 800, 480 }, { 1920, 1080 }, { 640, 480 }
+        { 1280, 800 }, { 1024, 600 }, { 800, 480 }, { 1920, 1080 }, { 1024, 768 }
     };
     int s, pressed, fx, fy, bad, x0, y0, x1, y1;
     long blended = 0, blended_wrong = 0;
@@ -1741,8 +1755,12 @@ static void test_panel_size_floor(void)
     CHECK(!menu_view_ok(&v), "320 rows was usable");
     v = mkview(1280, 480);
     CHECK(menu_view_ok(&v), "480 rows was refused");
-    v = mkview(640, 480);
-    CHECK(menu_view_ok(&v), "640x480 was refused");
+    /* 800, not 640: this spot-check is about the HEIGHT floor at an otherwise-usable
+     * width, and 640 stopped being one 2026-10-16 (REC's eighth column, see TSIZES'
+     * comment) -- using it here would fail on the width floor and say nothing about
+     * the height floor this block exists to pin. */
+    v = mkview(800, 480);
+    CHECK(menu_view_ok(&v), "800x480 was refused");
     v = mkview(1920, 1080);
     CHECK(menu_view_ok(&v), "1920x1080 was refused");
 

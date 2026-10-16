@@ -105,6 +105,15 @@ enum {
     MENU_BTN_PRESSED,   /* ...while a finger is on it */
     MENU_LABEL,         /* a glyph on a button */
     MENU_LABEL_PRESSED, /* ...on the pressed button (dark on the accent) */
+    /* REC's recording indicator (item 7, 2026-10-16): the one button's own
+     * one-pixel outline, in red, while menu_blink() names it -- the caller
+     * (pointsrc.c) toggles that name on and off at its own clock while
+     * MASTER REC is recording, which is what makes the ring pulse rather than
+     * just turn red and stay there. Independent of `pressed`, same as
+     * MENU_BORDER itself: a finger on the button and a recording in progress
+     * are two different facts about it. class_in_layout() is the one place
+     * that chooses this over MENU_BORDER. */
+    MENU_BORDER_BLINK,
     /* THE TWO OFF CLASSES, and the band never draws them. They are here rather than
      * in prompt_paint.c for the reason side_paint.c gives for its own colours: the
      * palette is PUBLIC and in ONE place, so the band, the two drawers, the window and

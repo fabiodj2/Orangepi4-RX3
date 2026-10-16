@@ -115,10 +115,22 @@
  * pulling the stick, is the thing that risks the media. Nothing about the column
  * arithmetic below is six-specific; at 1280 logical px a column is 182 px and the
  * widest label, "USB STOP", is 76 px at the shipped atlas (menu_font.h), so the
- * seventh costs every label 42 px of a 182 px column and none of them notices. */
-#define MZ_COLS        7     /* SOURCE BROWSE TAG LIST PLAYLIST SEARCH MENU USB STOP */
+ * seventh costs every label 42 px of a 182 px column and none of them notices.
+ *
+ * Eight, as of 2026-10-16: REC, the operator's own ask for a touchscreen button
+ * to start/stop MASTER REC (item 7) rather than only the DDJ-400's SHIFT-hold
+ * gesture. It is not an rbp keycode at all -- pointsrc.c's menu_fire() catches
+ * its column's sentinel (rbp_abi.h's K_MASTER_REC_UI) the same way it already
+ * catches K_USBSTOP, and posts the same toggle request file the DDJ-400 bridge
+ * does instead of sending a key. 1280/8 is a clean 160, so the eighth column
+ * costs nothing in column arithmetic -- the uneven 182/184 split above is a
+ * seven-column artifact and goes away at eight. */
+#define MZ_COLS        8     /* SOURCE BROWSE TAG LIST PLAYLIST SEARCH MENU USB STOP REC */
 
-/* THE EIGHTH CELL IS GONE, AND WHY IT WENT RATHER THAN CHANGED ITS MARK.
+/* A DIFFERENT EIGHTH CELL ONCE CAME AND WENT HERE, AND WHY IT WENT RATHER THAN
+ * CHANGED ITS MARK. (REC, above, is a second and unrelated eighth column added
+ * later, 2026-10-16, once the count had settled back at seven; nothing below
+ * this paragraph describes it.)
  *
  * It was the web cell: a mark in the panel's last 48 px that opened the deck's browser
  * window -- the operator's own asks, "a > button for an extended menu and have it open
@@ -411,6 +423,22 @@ void menu_tap_point(int *x, int *y);
 /* State, read by the painter (menu_draw.c) and by pointsrc_status(). */
 int menu_is_open(void);
 int menu_pressed(void);        /* button currently under the finger, 0 for none */
+
+/* REC's recording indicator (item 7, 2026-10-16). This is NOT a gesture fact like
+ * `pressed` above -- nothing about a finger decides it -- it is MASTER REC's own
+ * state and pointsrc.c's own clock, read there and named here so menu_paint.c's
+ * class_in_layout() can ask a pure question about one button's identity rather
+ * than take a clock or an engine pointer itself. The caller is expected to call
+ * menu_set_blink(button, 1) and menu_set_blink(button, 0) alternately, roughly
+ * once a second total, for as long as that button should read as recording; 0 is
+ * "no button blinks", which is also the reset state and the only state any
+ * existing test (none of which call this) ever sees. */
+void menu_set_blink(int button, int on);
+int menu_blink(void);          /* the button currently naming MENU_BORDER_BLINK, or 0 */
+
+/* NOT cleared by menu_reset(): a touch device dropping out has nothing to say
+ * about whether MASTER REC is still recording, and pointsrc.c's own tick keeps
+ * correcting this independently of the gesture state menu_reset() exists for. */
 
 /* Forget everything. Called from pointsrc.c where the touch device is lost
  * (beside touch_zone_reset()), so a panel that was unplugged mid-swipe cannot

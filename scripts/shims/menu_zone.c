@@ -13,11 +13,13 @@
                            * menu_feed() below, and side_zone.h's ONE SURFACE note */
 
 /* In column order, one per menu_key[] slot in pointsrc.c -- the two tables are read
- * together and are the same length by construction. "USB STOP" is the seventh and
- * the only one that is not a browse key; it is uppercase like the rest because the
- * font has no lowercase (menu_font.h's set). */
+ * together and are the same length by construction. "USB STOP" and "REC" are not
+ * browse keys; they are uppercase like the rest because the font has no lowercase
+ * (menu_font.h's set). REC's keycode (rbp_abi.h's K_MASTER_REC_UI) is a sentinel
+ * pointsrc.c's menu_fire() catches before it would otherwise send a key -- see
+ * menu_zone.h's MZ_COLS comment. */
 static const char *const labels[MZ_COLS] = {
-    "SOURCE", "BROWSE", "TAG LIST", "PLAYLIST", "SEARCH", "MENU", "USB STOP"
+    "SOURCE", "BROWSE", "TAG LIST", "PLAYLIST", "SEARCH", "MENU", "USB STOP", "REC"
 };
 
 /* ---------------------------------------------------------------------------
@@ -101,6 +103,23 @@ int menu_is_open(void)
 int menu_pressed(void)
 {
     return open_state ? cur_btn : 0;
+}
+
+/* See menu_zone.h: not gesture state, not touched by menu_reset(). */
+static int blink_btn;
+
+void menu_set_blink(int button, int on)
+{
+    if (on) {
+        blink_btn = button;
+    } else if (blink_btn == button) {
+        blink_btn = 0;
+    }
+}
+
+int menu_blink(void)
+{
+    return blink_btn;
 }
 
 int menu_hold_fires(int held_ms, int threshold_ms)
