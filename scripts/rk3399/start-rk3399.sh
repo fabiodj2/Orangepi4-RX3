@@ -304,6 +304,24 @@ if [ -n "$RT_PRIO" ]; then
     else
         echo "JuceALSA ${A:-not found}: left SCHED_OTHER (rt_group_sched=0 on the kernel command line?)" >&2
     fi
+    # RX3_AUDIO_CPU: optional single-core affinity for JuceALSA (unset by
+    # default -- SCHED_FIFO on any core, the proven-safe baseline). This only
+    # pins the one thread; it does NOT restrict the rest of rbp (CPUS/
+    # RX3_RBP_CPUS stays whatever it already was), unlike the 2026-10-14
+    # regression (JuceALSA forced onto an A72 core while the rest of rbp was
+    # separately confined to the A53s, starving the decoders of A72 time and
+    # causing constant clicks). Measurement-only knob for the open question in
+    # docs/rk3399/00-port.md "## CPU core balance": does giving JuceALSA its
+    # own dedicated A72 core (distinct from gui_task's, e.g. RX3_GUI_CPUS=4
+    # RX3_AUDIO_CPU=5) help over sharing the {4,5} set, without that regression.
+    AUDIO_CPU=${RX3_AUDIO_CPU-}
+    if [ -n "$AUDIO_CPU" ] && [ -n "$A" ]; then
+        if taskset -pc "$AUDIO_CPU" "$A" >/dev/null; then
+            echo "JuceALSA $A: pinned to cpu $AUDIO_CPU"
+        else
+            echo "JuceALSA $A: taskset pin to cpu $AUDIO_CPU failed" >&2
+        fi
+    fi
 fi
 
 sleep 8

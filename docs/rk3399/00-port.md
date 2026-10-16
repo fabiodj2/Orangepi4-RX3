@@ -490,6 +490,27 @@ alone away from the A72s (`RX3-RBPI4B-RK3399`'s own `start-rk3399.sh` comment:
 clicks: the decoders need the A72s"). Not attempted this session -- measurement
 only, at the operator's call.
 
+**RESOLVED/ANSWERED 2026-10-15 (next session): tried it, it's worse, reverted.**
+Added an optional `RX3_AUDIO_CPU` knob (`start-rk3399.sh`, taskset -pc on the
+JuceALSA thread only -- does not touch `RX3_RBP_CPUS`, so decoders stay free to
+roam all 6 cores, unlike the 2026-10-14 regression where the *whole* process was
+confined to the A53s while JuceALSA alone was forced onto an A72). Tested
+`RX3_GUI_CPUS=4 RX3_AUDIO_CPU=5` (one dedicated A72 core each) with
+`FB_VSYNC_RATE=1` live for ~30s: avg 58.2 fps, 9 of 30 one-second samples under
+57 fps (worst 53.0) -- clearly worse than the proven default (`GUI_CPUS=4,5`
+shared, no JuceALSA affinity): 59.9 avg, worst 58, zero samples under 57.
+Conclusion: `gui_task` benefits from being able to float between *both* A72
+cores (picking whichever is free at the moment), so giving it only one and
+reserving the other for JuceALSA removes exactly the flexibility that made the
+shared-set pinning work in the first place. Reverted to the default
+(`systemctl start rx3-rbpi4b-rk3399`, no env overrides) -- did not get far
+enough to need the audio-click listening test, since the fps regression alone
+rules this approach out. `RX3_AUDIO_CPU` is left in the script as a documented,
+off-by-default knob in case a future idea wants single-core JuceALSA pinning
+for some other reason, but it is NOT recommended for normal use. CPU core
+balance item considered closed: the current default is the best of the options
+tried.
+
 ## Open
 
 * Remaining audio clicks: RT priority for `JuceALSA` applied (`rt_group_sched=0` in
