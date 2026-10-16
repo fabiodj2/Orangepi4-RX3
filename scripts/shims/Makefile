@@ -26,7 +26,44 @@ RX3ULIB := $(RX3)/usr/lib
 # (dev-only archives); give the linker empty stubs so -lpthread links.
 COMPAT  ?= compat
 
+# -D_FILE_OFFSET_BITS=32 -D_TIME_BITS=32 -include glibc213-compat.h: pinned,
+# not left to the build host's default. This toolchain's arm-linux-gnueabi
+# spec now bakes _FILE_OFFSET_BITS/_TIME_BITS to 64 by default (`gcc -dM -E
+# /dev/null` shows it with no flags at all) -- the Y2038/LFS-by-default
+# migration landing in the armel port -- which silently turns every plain
+# `open`/`stat`/`lseek`/`mmap` reference in every .c file below into its
+# `*64` form via fcntl.h's own `#define open open64` (etc). That is harmless
+# where a file calls libc's open() under that name, but fb_shim.c, gpioshim.c
+# and tscshim.c each define BOTH `open` and `open64` as two distinct, real
+# functions (plain vs. forced O_LARGEFILE), and the macro silently renames
+# the first one's definition to `open64` too, so the assembler sees two
+# bodies claiming the same symbol and refuses the object ("symbol `open64'
+# is already defined") -- found 2026-10-16 chasing exactly that error on
+# fb_shim.o after a host package update. _TIME_BITS=32 has to come with it:
+# glibc's features-time64.h refuses _TIME_BITS=64 unless _FILE_OFFSET_BITS
+# is also 64, so pinning one without the other does not build either.
+#
+# glibc213-compat.h was already written for exactly this (its own header
+# comment names this same host and this same -D pin) but was never actually
+# wired in here with -include -- the missing half, found the same session
+# chasing a SECOND failure one layer down: with the two -D's above fixed,
+# fb_shim.o built, but the linked fbshim.so then failed to LOAD in the
+# chroot ("undefined symbol: __isoc23_sscanf"), because this toolchain's
+# glibc headers redirect sscanf/strtol/etc. to __isoc23_* names under
+# _GNU_SOURCE (every shim's own convention) regardless of -std=. The header
+# neutralises that redirect (__GLIBC_USE_C23_STRTOL) and forwards fstat to a
+# raw syscall (glibc 2.13 lacks fstat@GLIBC_2.33) -- both GLIBC_2.38/2.33
+# symbols the chroot's glibc 2.13 does not have, so an object built without
+# this header links clean on this host and then fails to load on the unit,
+# which is what makes it easy to think a build that COMPILES is a build that
+# WORKS. The target is glibc 2.13, soft-float EABI5, years before any of
+# these conventions existed: all three pins together are what keeps every
+# shim on GLIBC_2.4/2.7 only, not a 2026-era ABI the host toolchain now
+# assumes by default. `objdump -T fbshim.so | grep GLIBC_ | sort -Vu` and
+# `nm -D -u fbshim.so | grep isoc` are the two checks that catch a drift
+# here before it reaches the unit as a silent load failure.
 CFLAGS  := -O2 -march=armv5t -mfloat-abi=soft -fno-stack-protector -fPIC \
+           -D_FILE_OFFSET_BITS=32 -D_TIME_BITS=32 -include glibc213-compat.h \
            -Wall -Wextra -Wno-unused-parameter
 LDFLAGS := -L$(COMPAT) -L$(RX3LIB) -L$(RX3ULIB) -Wl,-rpath-link,$(RX3LIB):$(RX3ULIB)
 
