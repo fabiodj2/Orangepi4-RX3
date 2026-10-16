@@ -824,6 +824,23 @@ static const signed char bfx_type_to_pos[15] = {
 #define DJ_ENGINE_GET_REC_STATUS 0x0004fc0cUL
 #define DJ_ENGINE_START_RECORDING 0x0004f994UL
 #define DJ_ENGINE_STOP_RECORDING  0x0004fad0UL
+/* djengine::DjEngineIF::prepareRecording(char const *path, bool) (`nm -C`,
+ * 2026-10-15, next session): `this`-ignored same as the three above (reads
+ * its own internal MixerEngine singleton global, 0x011493c0, confirmed by
+ * disassembly -- the `this` arg is dead code in all four of these). The ONLY
+ * caller found in the whole binary is `ui::UsbStorageManager::notify_db_attach()`
+ * -- rbp normally calls this itself automatically when a USB drive mounts,
+ * passing the drive's real path as a UTF8 juce::String. Needed because a
+ * live read confirmed `startRecording()` alone is not enough even with a
+ * genuinely non-null WavWriter* (MixerEngine+0x54): called it, no crash, no
+ * file, `getRecordingStatus()` never flips -- the WavWriter exists but was
+ * never *prepared* with a path (this notify_db_attach call apparently never
+ * fires, or fires before our mount is visible, in this environment -- same
+ * "missing sub-MCU" class of gap as elsewhere in this project). Call this
+ * once with a real path (e.g. the mounted USB root, `/media/usb1/sda1` from
+ * rbp's own chroot) before startRecording(); bool's meaning is unconfirmed
+ * from the one caller's convoluted boolean computation, start with false. */
+#define DJ_ENGINE_PREPARE_RECORDING 0x0004f8dcUL
 /* The four drawn boxes, x ranges, measured off the scanout 2026-10-13 (FLANGER 19..148,
  * ECHO 159..288, VINYL BRAKE 299..428, DELAY 439..568, all y 517..553); the shim's
  * rects split the 10 px gaps so a finger between two boxes still picks one. */

@@ -1708,6 +1708,15 @@ static void master_rec_state_tick(void)
     pointsrc_log("master rec: status -> %s\n", recording ? "recording" : "idle");
 }
 
+/* First USB slot's mount point as seen from inside rbp's own chroot (matches
+ * the host's work/runtime/rx3/media/usb1/sda1). rbp normally learns this
+ * itself from ui::UsbStorageManager::notify_db_attach() when a drive mounts
+ * and calls prepareRecording() with it automatically; that path apparently
+ * never fires here (see DJ_ENGINE_PREPARE_RECORDING in rbp_abi.h), so we
+ * supply it ourselves. Single slot only -- not a general USB-selection
+ * feature. */
+#define MASTER_REC_USB_PATH "/media/usb1/sda1"
+
 static void master_rec_toggle_tick(void)
 {
     void *engine;
@@ -1728,6 +1737,10 @@ static void master_rec_toggle_tick(void)
         ((void (*)(void *))DJ_ENGINE_STOP_RECORDING)(engine);
         pointsrc_log("master rec: stopRecording() called\n");
     } else {
+        ((void (*)(void *, const char *, int))DJ_ENGINE_PREPARE_RECORDING)(
+            engine, MASTER_REC_USB_PATH, 0);
+        pointsrc_log("master rec: prepareRecording(\"%s\", false) called\n",
+                      MASTER_REC_USB_PATH);
         ((void (*)(void *))DJ_ENGINE_START_RECORDING)(engine);
         pointsrc_log("master rec: startRecording() called\n");
     }
