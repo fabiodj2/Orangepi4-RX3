@@ -670,8 +670,35 @@ on the A53s under RT priority, decoders share the A53s with it unrestricted.
   in `pointsrc.c`, `rbp_abi.h` has the three function addresses +
   `DJ_ENGINE_GLOBAL`), so a future session can pick this up without
   re-deriving the addresses.
-* CROSSFADER CURVE in Utility (2026-10-15, requested, paused -- picked back
-  up and paused again the same day): rbp already has a full native
+* CROSSFADER CURVE: **RESOLVED 2026-10-15 (next session)** -- the actual ask
+  was the physical control, not a new Utility row. Operator confirmed the
+  control is SHIFT + BEAT FX CH SELECT, and that path already existed:
+  `RX3-RK3399-DDJ400`'s `ddj400-bridge.c` `handle_fxch()` has sent
+  `K_FADERCURVE` (`0x6018`, a real rbp keycode, `OP_VALUE` 1/2/3 ->
+  normal/sharp/wide) on SHIFT+CH1/CH2/MASTER since commit `ded5295`
+  (2026-09-27 -- written for the old FLX4/RPi4 stack, untouched since,
+  already deployed and running unmodified in the current rk3399 build, no
+  rebuild needed). It reaches rbp through the exact same generic path as
+  every other working key (`send_ctrl()` -> `/tmp/rb-ctrl.fifo` -> keyshim's
+  reader -> `send_rx_key_fl()` -> rbp's own `KeyManager::sendkey` vtable call,
+  `rbp_key.c` -- nothing in our shim interprets or filters keycodes, so
+  anything that worked on the old stack keeps working on this one as long as
+  rbp itself is the same binary). Tested live: operator held SHIFT, moved the
+  BEAT FX CH SELECT switch between its three positions, confirmed the
+  crossfader curve audibly/physically changed each time -- "mudou sim, a
+  curva ficou diferente." No code changes were needed. The earlier
+  Utility-row insertion investigation below (mmap'd table copy + literal-pool
+  patching, blocked on a MIXER-category count/address mismatch) targeted a
+  harder, separate problem -- a *visible* row in the UTILITY -> MIXER screen
+  -- which turned out not to be what was actually requested; that
+  investigation is parked, not resumed, unless a visible on-screen row is
+  wanted later for its own sake. Relevant getters if that visibility is ever
+  revisited: `UiGetChFaderCurve` (`0x000fefa8`, live/current) and
+  `UiGetUtilChFaderCurve` (`0x000feb14`, the persisted Utility setting),
+  found by `nm` alongside the rest of the "Util" family, not yet added to
+  `rbp_abi.h` since no code calls them.
+* Old investigation (superseded by the resolution above, kept for the
+  record): rbp already has a full native
   crossfader-curve API (`mixerengine::MixerEngine::setCrossFaderCurve`/
   `getCrossFaderCurve`, `djengine::DjEngineIF::setCrossFaderCurve`, even
   `ui::XFaderInnards::onEv_FaderCurveSwitched(uif::IKeyInput::SW_FADER_CURVE)`)
