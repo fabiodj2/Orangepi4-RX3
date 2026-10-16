@@ -502,14 +502,25 @@ shared, no JuceALSA affinity): 59.9 avg, worst 58, zero samples under 57.
 Conclusion: `gui_task` benefits from being able to float between *both* A72
 cores (picking whichever is free at the moment), so giving it only one and
 reserving the other for JuceALSA removes exactly the flexibility that made the
-shared-set pinning work in the first place. Reverted to the default
-(`systemctl start rx3-rbpi4b-rk3399`, no env overrides) -- did not get far
-enough to need the audio-click listening test, since the fps regression alone
-rules this approach out. `RX3_AUDIO_CPU` is left in the script as a documented,
-off-by-default knob in case a future idea wants single-core JuceALSA pinning
-for some other reason, but it is NOT recommended for normal use. CPU core
-balance item considered closed: the current default is the best of the options
-tried.
+shared-set pinning work in the first place. Reverted that combination -- did
+not get far enough to need the audio-click listening test, since the fps
+regression alone ruled it out.
+
+**Follow-up same session, operator's idea: move JuceALSA to the A53s instead,
+leaving gui_task the full `{4,5}` set to itself.** `RX3_AUDIO_CPU=0-3` (A53
+set) with `RX3_GUI_CPUS` left at its default (`4,5`): fps unaffected (59.8 avg
+over 40 one-second samples, 1 dip to 56.5, otherwise 59.9-60.0 -- essentially
+identical to the plain-SCHED_OTHER-any-core baseline). Verified via `systemctl
+restart` (not just the manual override run) that this is a clean, reproducible
+config, then operator listened live and confirmed clean: "tocando aqui, parece
+limpo, sem clique." A53 cores already had ~80% headroom per core (measured
+earlier this session), so JuceALSA's SCHED_FIFO 45 render slice (2 x 64 frames,
+2.9 ms budget) fits fine alongside the decoders there, and it no longer
+competes with gui_task for an A72 core at all. **Adopted as the new default**
+(`AUDIO_CPU=${RX3_AUDIO_CPU-0-3}` in `start-rk3399.sh`; `RX3_AUDIO_CPU=` empty
+restores the old any-core behavior if a future regression turns up). CPU core
+balance item closed: gui_task gets both A72 cores exclusively, JuceALSA runs
+on the A53s under RT priority, decoders share the A53s with it unrestricted.
 
 ## Open
 

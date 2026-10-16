@@ -304,17 +304,25 @@ if [ -n "$RT_PRIO" ]; then
     else
         echo "JuceALSA ${A:-not found}: left SCHED_OTHER (rt_group_sched=0 on the kernel command line?)" >&2
     fi
-    # RX3_AUDIO_CPU: optional single-core affinity for JuceALSA (unset by
-    # default -- SCHED_FIFO on any core, the proven-safe baseline). This only
-    # pins the one thread; it does NOT restrict the rest of rbp (CPUS/
-    # RX3_RBP_CPUS stays whatever it already was), unlike the 2026-10-14
-    # regression (JuceALSA forced onto an A72 core while the rest of rbp was
-    # separately confined to the A53s, starving the decoders of A72 time and
-    # causing constant clicks). Measurement-only knob for the open question in
-    # docs/rk3399/00-port.md "## CPU core balance": does giving JuceALSA its
-    # own dedicated A72 core (distinct from gui_task's, e.g. RX3_GUI_CPUS=4
-    # RX3_AUDIO_CPU=5) help over sharing the {4,5} set, without that regression.
-    AUDIO_CPU=${RX3_AUDIO_CPU-}
+    # RX3_AUDIO_CPU: CPU affinity for JuceALSA only (taskset -pc on that one
+    # thread; does NOT restrict the rest of rbp -- CPUS/RX3_RBP_CPUS stays
+    # whatever it already was). That distinction matters: the 2026-10-14
+    # regression was JuceALSA forced onto an A72 core *while the rest of rbp
+    # was separately confined to the A53s*, starving the decoders of A72 time
+    # and causing constant clicks -- not this knob alone.
+    # Default is now "0-3" (the A53 set), decided live 2026-10-15: first tried
+    # giving JuceALSA its own dedicated A72 core (RX3_GUI_CPUS=4 RX3_AUDIO_CPU=5,
+    # splitting the {4,5} set in half) -- worse fps (58.2 avg, 9/30 samples
+    # under 57fps) because gui_task lost the ability to float to whichever A72
+    # core was free. Then tried moving JuceALSA to the A53s instead, leaving
+    # gui_task the full {4,5} set to itself: fps unaffected (59.8 avg over 40
+    # one-second samples, basically identical to the plain SCHED_OTHER-any-core
+    # baseline's 59.9), and the operator confirmed live by ear -- "tocando aqui,
+    # parece limpo, sem clique" -- no audible clicks. A53 cores had ~80 %
+    # headroom per core before this (measured same session), so JuceALSA's
+    # SCHED_FIFO 45 render slice fits fine alongside the decoders. RX3_AUDIO_CPU=
+    # (empty) restores the old any-core behavior if a future regression shows up.
+    AUDIO_CPU=${RX3_AUDIO_CPU-0-3}
     if [ -n "$AUDIO_CPU" ] && [ -n "$A" ]; then
         if taskset -pc "$AUDIO_CPU" "$A" >/dev/null; then
             echo "JuceALSA $A: pinned to cpu $AUDIO_CPU"
