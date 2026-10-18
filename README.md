@@ -17,7 +17,9 @@ layer that knows which page of rbp's UI is on the glass.
 > Pioneer/AlphaTheta firmware, no `rbp` binary and no rekordbox content.** You
 > supply your own extracted assets. See [NOTICE.md](NOTICE.md).
 
-The full engineering record — every measurement, decision and rollback — is
+**Installing from zero? [docs/rk3399/01-tutorial.md](docs/rk3399/01-tutorial.md)**
+walks through it end to end. The full engineering record — every
+measurement, decision and rollback — is
 **[docs/rk3399/00-port.md](docs/rk3399/00-port.md)**.
 
 ---

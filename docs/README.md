@@ -5,8 +5,10 @@ Denon SC Live 4 target retained as the reference the port started from.
 
 > **Production today (2026-10-18) is a different target**: an **RK3399
 > (Orange Pi) with a DDJ-400**, not the Raspberry Pi 4 + DDJ-FLX4 this
-> `docs/` tree was originally written for. **Start with
-> [rk3399/00-port](rk3399/00-port.md)** for that, and
+> `docs/` tree was originally written for. **Installing from zero? Start
+> with [rk3399/01-tutorial](rk3399/01-tutorial.md)**. For the engineering
+> record (every measurement, decision, rollback), see
+> [rk3399/00-port](rk3399/00-port.md), and
 > [19 — DDJ-400 MIDI](19-ddj400-midi.md) for the controller mapping. The
 > numbered docs below (00-18) remain as the Pi 4/FLX4 bring-up reference —
 > accurate for that hardware, not re-verified for the RK3399/DDJ-400 one.

@@ -1,10 +1,18 @@
 # RK3399 port — rbpi4b on the Orange Pi 4 LTS
 
+> **Installing from zero?** See [01-tutorial](01-tutorial.md) instead — this
+> doc is the engineering record (every measurement, decision, rollback),
+> not a step-by-step guide.
+
 Branch `port/rk3399` of this rbpi4b clone runs rbp v1.20 on the Orange Pi 4 LTS
 (RK3399, Armbian 6.18, HDMI 1920×1080×32 `rockchipdrmfb`, USB touch monitor
-`wch.cn TouchScreen`, DDJ-400). It takes **display and touch from rbpi4b** and
-**controller, audio and STEMS from `~/RX3-RK3399-DDJ400`** (the earlier port,
-still intact and still the rollback).
+`wch.cn TouchScreen`, DDJ-400). It took **display and touch from rbpi4b** and
+**controller, audio and STEMS from `~/RX3-RK3399-DDJ400`** (the earlier port) —
+true when this doc was first written; as of 2026-10-18 the DDJ-400 controller
+and audio pieces (`ddj400-bridge`, `keyshim.c`, `memshim.c`, `audioshim.c`,
+`usb-watch.sh`) were brought into this repo and it no longer depends on that
+one for them. STEMS (`librx3_core.so`, from the separate `rx3-toolkit`
+project) is unaffected either way — see §7 of the tutorial.
 
 | Layer | From | Notes |
 |---|---|---|
