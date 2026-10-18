@@ -130,6 +130,9 @@
 #include "fx_paint.h"          /* ...and the image it is drawn with */
 #include "fxpad_zone.h"        /* the momentary X/Y pad: whether it is holding a finger */
 #include "fxpad_paint.h"       /* ...and the HUD it draws over rbp's BPM cell */
+#include "xfader_zone.h"       /* the CROSSFADER CURVE band: whether to show it, which
+                                 * icon is selected */
+#include "xfader_paint.h"      /* ...and the image it is drawn with */
 #include "rbp_vu.h"            /* g_fader[]: the value the drawer's handle follows */
 #include "drmband.h"           /* the overlay plane, when this machine has one */
 #include "fbdev.h"
@@ -422,6 +425,22 @@ struct menu_map {
     int  fxp_ok;                 /* the pad's plane is set up and mapped */
     int  fxp_on;                 /* ...and it is on the glass right now */
     int  fxp_fail;               /* this machine refused a cell-sized plane */
+
+    /* The CROSSFADER CURVE band's own plane (item, 2026-10-17), same three-field
+     * shape as the pad's above and for the same reason: rbp repaints its whole
+     * frame continuously (this file's own long-standing note on that, above), so
+     * anything drawn straight onto the page would be erased within a frame or two
+     * -- a plane, composited by the display controller and never touched by rbp's
+     * own repaint, is the only way to keep it on the glass. Unlike the pad there
+     * is no page fallback: the pad's HUD sits over a live rbp readout it must
+     * still show something for even without a plane, but this band sits over
+     * blank glass rbp draws nothing into, and a flickering direct write there
+     * would be worse than no band at all -- a machine that refuses this plane
+     * simply does not get the picker. */
+    struct drm_band xf;
+    int  xf_ok;
+    int  xf_on;
+    int  xf_fail;
 
     /* The page, and the picture rect inside it, kept only so that a plane which
      * will not go up can be abandoned mid-session: the view goes back to these
@@ -1990,6 +2009,176 @@ static void menu_fxpad_plane_sync(void)
     menu_fxpad_live();
 }
 
+/* ---------------------------------------------------------------------------
+ * THE CROSSFADER CURVE BAND (xfader_zone.h/xfader_paint.h, item 2026-10-17): a
+ * picker drawn in the one blank strip of rbp's own SHORTCUT screen, on its own
+ * plane for the reason given at the `g.xf*` fields above. Three functions, the
+ * same shape fxpad's own three keep: where it goes, what it draws, and
+ * setup/show/hide driven by xfader_showing() -- a pure predicate pointsrc.c's
+ * own tick keeps current, exactly as fxpad_busy() drives menu_fxpad_plane_sync().
+ * ------------------------------------------------------------------------- */
+
+static int menu_xf_pw(void)
+{
+    return xfader_paint_w(g.view.dw);
+}
+
+static int menu_xf_ph(void)
+{
+    return xfader_paint_h(g.view.dh);
+}
+
+/* Where it goes: the icon row's own logical origin (XFADER_PAINT_X0/XFADER_ROW_Y0,
+ * i.e. 794 and 670), scaled and offset the same way menu_fxp_bx()/by() place the
+ * pad's cell. */
+static int menu_xf_bx(void)
+{
+    return g.fb_bx + (XFADER_PAINT_X0 * g.view.dw) / MZ_LOGICAL_W;
+}
+
+static int menu_xf_by(void)
+{
+    return g.fb_by + (XFADER_ROW_Y0 * g.view.dh) / MZ_LOGICAL_H;
+}
+
+/* The band's own plane, always -- there is no page route (see the `g.xf*` fields'
+ * comment: a flickering direct write over rbp's continuous repaint would be worse
+ * than no band). bx/by are left 0: xfader_paint.c's xf_fx()/xf_fy() add them, and
+ * this plane's own pixel (0,0) already IS the band's own top-left, the same
+ * convention menu_fxp_view() uses for the pad's plane route. */
+static void menu_xf_view(struct menu_view *sv)
+{
+    memset(sv, 0, sizeof *sv);
+    sv->pix   = g.xf.pix;
+    sv->pitch = g.xf.pitch;
+    sv->fb_w  = g.xf.w;
+    sv->fb_h  = g.xf.h;
+    sv->bpp   = g.xf.bpp;
+    sv->dw    = g.xf.w;
+    sv->dh    = g.xf.h;
+}
+
+/* Repainted only when the selection actually changes (or the plane is being
+ * shown for the first time) -- added 2026-10-17 after the first live deploy
+ * blinked. Unlike menu_fxpad_live() this band has no finger on it to vary the
+ * picture frame to frame: xfader_showing() holds the plane up for the whole
+ * time rbp is on SHORTCUT, so without this check the tick (display refresh
+ * rate, not the 50ms xfader_curve_tick()) would redraw an UNCHANGED picture
+ * into this single, unbuffered plane dozens of times a second -- a CPU write
+ * racing the scanout's read of the same memory, every frame, for no reason.
+ * last_painted starts at a value xfader_selected() can never return (range is
+ * -1..XFADER_ICONS-1) so the very first live call always paints. */
+static void menu_xfader_live(void)
+{
+    struct menu_view dv;
+    static int last_painted = -2;
+    int sel;
+
+    if (!g.xf_ok)
+        return;
+    menu_xf_view(&dv);
+    if (!xfader_paint_ok(&dv))
+        return;
+    sel = xfader_selected();
+    if (sel != last_painted || !g.xf_on) {
+        xfader_paint(&dv, sel);
+        last_painted = sel;
+    }
+    if (!g.xf_on && drm_band_show(&g.xf, menu_xf_bx(), menu_xf_by()) == 0)
+        g.xf_on = 1;
+}
+
+/* Setup/show/hide, same shape as menu_fxpad_plane_sync(): release the plane the
+ * moment nothing wants it shown (xfader_showing(), rbp has left the SHORTCUT
+ * screen or something now covers this glass), otherwise set the plane up once
+ * (xf_fail latches a refusal so a machine without a free plane is asked only
+ * once) and repaint+show it every tick while it is wanted. */
+static void menu_xfader_plane_sync(void)
+{
+    if (!xfader_showing()) {
+        if (g.xf_on) {
+            drm_band_hide(&g.xf);
+            g.xf_on = 0;
+        }
+        return;
+    }
+
+    if (!g.xf_ok && !g.xf_fail) {
+        if (drm_band_setup(&g.xf, menu_xf_pw(), menu_xf_ph(), g.view.bpp) != 0) {
+            g.xf_fail = 1;
+            pointsrc_log("xfader: no plane for the crossfader curve band -- staying off");
+        } else {
+            g.xf_ok = 1;
+            g.xf_on = 0;
+        }
+    }
+
+    menu_xfader_live();
+}
+
+/* ---------------------------------------------------------------------------
+ * THE NATIVE LABEL PATCH (xfader_zone.h/xfader_paint.h, 2026-10-17 2nd pass):
+ * overwrites rbp's own "CHANNEL FADER CURVE" heading with "CHANNEL/CROSS FADER
+ * CURVE" so it reads as one heading for both rows. Unlike the icon row above,
+ * this is PAGE ROUTE, not a plane -- the same technique menu_fxp_page_view()
+ * uses for the pad's fallback, because the destination is rbp's own live pixels,
+ * not blank glass we own a plane over. Driven by the same xfader_showing() the
+ * icon row uses, so the two always agree on whether this screen is up. */
+static int menu_xfl_pw(void)
+{
+    return xfader_label_paint_w(g.view.dw);
+}
+
+static int menu_xfl_ph(void)
+{
+    return xfader_label_paint_h(g.view.dh);
+}
+
+static int menu_xfl_bx(void)
+{
+    return g.fb_bx + (XFADER_LABEL_X0 * g.view.dw) / MZ_LOGICAL_W;
+}
+
+static int menu_xfl_by(void)
+{
+    return g.fb_by + (XFADER_LABEL_Y0 * g.view.dh) / MZ_LOGICAL_H;
+}
+
+static void menu_xfl_page_view(struct menu_view *sv)
+{
+    memset(sv, 0, sizeof *sv);
+    sv->pix   = (unsigned char *)g.fb_pix
+                + ((size_t)menu_xfl_by() * (size_t)g.fb_pitch
+                   + (size_t)menu_xfl_bx()) * (size_t)(g.view.bpp / 8);
+    sv->pitch = g.fb_pitch;
+    sv->dw    = menu_xfl_pw();
+    sv->dh    = menu_xfl_ph();
+    sv->fb_w  = sv->dw;
+    sv->fb_h  = sv->dh;
+    sv->bpp   = g.view.bpp;
+}
+
+/* Repainted every tick while showing, deliberately unconditional unlike the icon
+ * row's own dirty check: the icon row owns a plane rbp never touches, so a
+ * repaint is only ever redundant there. This rect is rbp's OWN live pixels --
+ * there is no event telling this shim when (or whether) rbp redraws its
+ * original heading under us, so the only safe answer is to keep re-asserting
+ * the patch, the same stance fxpad's page-route fallback takes for the same
+ * reason (menu_fxp_view()'s comment). The text is static and the rect is 300x27
+ * px, so the cost of doing this every tick is negligible next to the risk of
+ * rbp's original heading flashing back without it. */
+static void menu_xfader_label_live(void)
+{
+    struct menu_view dv;
+
+    if (!xfader_showing())
+        return;
+    menu_xfl_page_view(&dv);
+    if (!xfader_label_paint_ok(&dv))
+        return;
+    xfader_label_paint(&dv);
+}
+
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* A monotonic microsecond clock, for the two passes worth timing: the classify
@@ -2619,6 +2808,18 @@ void menu_frame_tick(void)
      * happened. Here, one call releases it on the first tick after the finger goes,
      * whatever else the tick is about to do. An idle pad costs this one comparison. */
     menu_fxpad_plane_sync();
+
+    /* The CROSSFADER CURVE band's own plane, same "do this before any route is
+     * decided" placement and for a milder version of the pad's own reason: it has
+     * no finger to lose track of, but it does have to come down the instant rbp
+     * leaves the SHORTCUT screen, whatever else this tick is about to do. */
+    menu_xfader_plane_sync();
+
+    /* The native label patch, same gate (xfader_showing()) as the icon row just
+     * above, so the heading and the icons appear and disappear together. Page
+     * route, not plane: see menu_xfader_label_live()'s own comment for why this
+     * one is unconditional every tick while the icon row's is not. */
+    menu_xfader_label_live();
 
     /* The window next, and it DECIDES THE ROUTE: while it is open it owns the
      * process's one plane, so the band's whole path below -- present, witness,

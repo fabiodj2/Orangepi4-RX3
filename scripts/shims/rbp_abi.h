@@ -138,6 +138,12 @@
  * hundred bytes on reads the true 33. */
 #define BROWSE_MODE_UTILITY 7
 
+/* K_SHORTCUT's own comment above already says K_SHORTCUT opens "browse mode 10" --
+ * this is that mode as its own literal, BROWSE_MODE_UTILITY's pattern repeated for
+ * xfader_zone.h's CROSSFADER CURVE picker (item, 2026-10-17). test_xfader.c pins
+ * xfader_zone.h's own XFADER_MODE_SHORTCUT literal equal to this one. */
+#define BROWSE_MODE_SHORTCUT 10
+
 /* uiBrowse's fields, as the accessors above read them. `list` is 0 or 1 (the two
  * browsable lists); CURSOR is indexed by list and the other two stride by
  * LIST_STRIDE. All four are `int`.
@@ -851,6 +857,22 @@ static const signed char bfx_type_to_pos[15] = {
  * rbp's own chroot) before startRecording(); bool's meaning is unconfirmed
  * from the one caller's convoluted boolean computation, start with false. */
 #define DJ_ENGINE_PREPARE_RECORDING 0x0004f8dcUL
+/* K_FADERCURVE: a real rbp-native keycode (NOT a shim sentinel like K_MASTER_REC_UI
+ * above), already proven live through the DDJ-400's SHIFT+FX CH1/CH2/MASTER binding
+ * (RX3-RK3399-DDJ400/scripts/rb/device/ddj400-bridge.c). OP_VALUE, sent with BOTH the
+ * long param and the float fval set to the same curve number (that bridge's own
+ * send_ctrl() call does this, and this is the one call this project has evidence for,
+ * so xfader_zone.h's picker sends the identical shape rather than guessing which of
+ * the two rbp actually reads): 1=normal, 2=sharp/cut, 3=a 4th ("wide open") curve;
+ * 0=THRU exists but is not exposed by that binding and is not exposed here either. */
+#define K_FADERCURVE 0x6018
+
+/* djengine::DjEngineIF::getCrossFaderCurve() const (`nm -C`, 2026-10-17): same
+ * DJ_ENGINE_GLOBAL singleton and the same this-only ARM member-function calling
+ * convention as DJ_ENGINE_GET_REC_STATUS above. Read-only, used only to know which
+ * of xfader_zone.h's three icons to highlight -- never to decide what to send. */
+#define DJ_ENGINE_GET_XFADER_CURVE 0x0004cb64UL
+
 /* The four drawn boxes, x ranges, measured off the scanout 2026-10-13 (FLANGER 19..148,
  * ECHO 159..288, VINYL BRAKE 299..428, DELAY 439..568, all y 517..553); the shim's
  * rects split the 10 px gaps so a finger between two boxes still picks one. */
