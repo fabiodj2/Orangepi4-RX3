@@ -268,20 +268,18 @@ $(CTRL_OBJS): %.o: %.c $(CTRL_HDRS)
 # the pattern rule, because a header edit that no target depends on is a rebuild
 # that silently does not happen.
 #
-# -lm is for mirror_policy.o's mirror_boost_gain(), and it is the RX3's libm rather
-# than the build host's for the same reason -lc is the RX3's libc: the -L paths
-# below put $(RX3)/lib first, and that rootfs ships libm-2.13.so with the dev
-# symlink in usr/lib. knobshim.so and fbshim.so have linked -lm this way since
-# rbp_vu.c's log10() and rbp_led.c. A host libm here would stamp GLIBC_2.29+
-# references and the shim would refuse to load in the glibc-2.13 chroot.
-audioshim.so: audioshim.o s24pack.o mirror_policy.o master_policy.o \
-              pace_policy.o controllers.o
-	$(CC) $(CFLAGS) -shared -o $@ audioshim.o s24pack.o mirror_policy.o \
-	    master_policy.o pace_policy.o controllers.o $(RX3LIB)/libdl.so.2 -lm -lc \
-	    $(LDFLAGS)
+# Replaced 2026-10-18 with RX3-RK3399-DDJ400's DDJ-400-specific audioshim.c:
+# this repo works with the DDJ-400 only now, not the DDJ-FLX4 (whose audioshim
+# needed s24pack.o/mirror_policy.o/master_policy.o/pace_policy.o/controllers.o
+# for the HDMI mirror and its own gain staging -- none of that applies to the
+# DDJ-400's own 4-channel USB audio path). Those .o files and their sources are
+# left in place (still used by knobshim.so/the FLX4 map, which this repo isn't
+# pruning in the same pass) but audioshim.so no longer depends on them.
+# Self-contained like memshim.so/keyshim.so above: dlopen/dlsym must bind to
+# the RX3's own libdl (GLIBC_2.4), hence the explicit $(RX3LIB)/libdl.so.2.
+audioshim.so: audioshim.c
+	$(CC) $(CFLAGS) -shared -o $@ $< $(RX3LIB)/libdl.so.2 -lc $(LDFLAGS)
 
-audioshim.o: audioshim.c shmstate.h envutil.h s24pack.h mirror_policy.h \
-             master_policy.h pace_policy.h controllers.h
 s24pack.o: s24pack.c s24pack.h
 
 # controllers.o is shared with knobshim.so, and audioshim.o now includes its
@@ -562,6 +560,18 @@ gpioshim.so: gpioshim.c
 
 tscshim.so: tscshim.c $(COMPAT)/libc_nonshared.a $(COMPAT)/libpthread_nonshared.a
 	$(CC) $(CFLAGS) -shared -o $@ $< -lpthread -lm -lc $(LDFLAGS)
+
+# memshim must be FIRST in LD_PRELOAD: it redirects rbp's broken RTC
+# mmap(MAP_SHARED, fd=-1) (after /dev/mem is denied) to anon memory. Without it
+# rbp dereferences MAP_FAILED and SIGSEGV-loops until the watchdog resets the
+# device. Brought in from RX3-RK3399-DDJ400 2026-10-18 -- see memshim.c.
+memshim.so: memshim.c
+	$(CC) $(CFLAGS) -shared -o $@ $< -lc $(LDFLAGS)
+
+# keyshim: FIFO -> IKeyManager::sendKey, starts the UiMain pump, applies the
+# mixer defaults. Brought in from RX3-RK3399-DDJ400 2026-10-18 -- see keyshim.c.
+keyshim.so: keyshim.c $(COMPAT)/libc_nonshared.a $(COMPAT)/libpthread_nonshared.a
+	$(CC) $(CFLAGS) -shared -o $@ $< -lpthread -lc $(LDFLAGS)
 
 crashcatch.so: crashcatch.c
 	$(CC) $(CFLAGS) -shared -o $@ $< $(RX3LIB)/libdl.so.2 -lc $(LDFLAGS)

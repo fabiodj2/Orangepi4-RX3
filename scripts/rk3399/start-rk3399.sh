@@ -1,14 +1,21 @@
 #!/bin/sh
 # start-rk3399.sh — run rbp on the Orange Pi 4 LTS (RK3399, HDMI 1920x1080x32)
-# with rbpi4b's display + touch stack and the RX3-RK3399-DDJ400 project's
-# controller/audio stack.
+# with rbpi4b's display + touch stack and the DDJ-400 controller/audio stack.
+#
+# Self-contained as of 2026-10-18 -- ddj400-bridge, usb-watch.sh, keyshim.c,
+# memshim.c and audioshim.c were brought in from the sibling RX3-RK3399-DDJ400
+# project (which this repo no longer depends on at build or run time; FLX4
+# support there is unrelated and not needed here). netshim.so and
+# librx3_core.so were never actually sourced from that repo despite an
+# earlier version of this comment saying so -- both were already local/
+# already deployed into the runtime chroot.
 #
 #   from rbpi4b (this repo): DirectFB 1.4.16 + directfb-full.diff (aspect-fit
 #     present path, page-count buffer mode, pan pacer), fbshim.so (fb lies,
-#     in-process tsc2007 + pointsrc touch, touch zones: menu, FX, hot cues...)
-#   from RX3-RK3399-DDJ400 ($OLD): ddj400-bridge + keyshim.so (DDJ-400 map),
-#     audioshim.so (DDJ-400 USB audio), memshim.so (RTC mmap), netshim.so,
-#     librx3_core.so (STEMS), usb-watch.sh
+#     in-process tsc2007 + pointsrc touch, touch zones: menu, FX, hot cues...),
+#     ddj400-bridge + keyshim.so (DDJ-400 map), audioshim.so (DDJ-400 USB
+#     audio), memshim.so (RTC mmap), netshim.so, librx3_core.so (STEMS),
+#     usb-watch.sh
 #
 # Usage: sudo sh scripts/rk3399/start-rk3399.sh start|stop|status|run
 # docs/rk3399/00-port.md has the why of every choice below.
@@ -16,12 +23,10 @@ set -eu
 ulimit -c 0
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-OLD=${RX3_OLD_REPO:-$(cd "$REPO/../RX3-RK3399-DDJ400" && pwd)}
 RUNTIME=${RX3_RUNTIME:-$REPO/work/runtime/rx3}
 LOGDIR="$REPO/work/log"
-DDJ="$OLD/work/build/host/ddj400-bridge"
-WATCHER="$OLD/scripts/rb/device/usb-watch.sh"
-OLD_LAUNCHER="$OLD/scripts/rb/start-rk3399-ddj400.sh"
+DDJ="$REPO/work/build/host/ddj400-bridge"
+WATCHER="$REPO/scripts/rk3399/device/usb-watch.sh"
 HP_GAIN=${RX3_HP_GAIN_X:-4}
 # Digital master gain in dB, applied in audioshim.c's scale_master_s24()
 # (soft-knee limited, not hard-clamped -- see that file). The first +21dB
@@ -76,10 +81,18 @@ PRELOAD=/usr/lib/rbpi4b/fbshim.so:/usr/lib/memshim.so:/usr/lib/audioshim.so:/usr
 PRELOAD="$PRELOAD${RX3_EXTRA_PRELOAD:+:$RX3_EXTRA_PRELOAD}"
 
 stop_all() {
-    # The old launcher's stop knows every process and pattern of both setups
-    # (same rbp command line), and restores the console.
-    sh "$OLD_LAUNCHER" stop >/dev/null 2>&1 || true
+    # Inlined 2026-10-18 from RX3-RK3399-DDJ400's start-rk3399-ddj400.sh
+    # stop_all() (this repo no longer shells out to that one): the same rbp
+    # command line and helper processes exist here, so the same patterns
+    # apply, plus restoring the console.
+    pkill -TERM -f '^/lib/ld-linux\.so\.3 /root/pdj/rbp -a$' 2>/dev/null || true
+    pkill -TERM -f '^/lib/ld-linux\.so\.3 /usr/bin/edb_streamd$' 2>/dev/null || true
+    pkill -TERM -f 'work/build/host/ddj400-bridge' 2>/dev/null || true
     env RX3_RUNTIME="$RUNTIME" USBWATCH_SEG="$USB_SEG" sh "$WATCHER" stop 2>/dev/null || true
+    sleep 2
+    if [ -w /sys/class/vtconsole/vtcon1/bind ]; then
+        echo 1 > /sys/class/vtconsole/vtcon1/bind 2>/dev/null || true
+    fi
     # The toolkit core's rbp variant (RX3_CORE=toolkit) is only ever a bind mount.
     while mountpoint -q "$RUNTIME/root/pdj/rbp"; do umount "$RUNTIME/root/pdj/rbp" || break; done
     cpu_governor restore
