@@ -1,5 +1,11 @@
 # 13 — Raspberry Pi 4B target
 
+> **Historical note (2026-10-18):** "current target" below is no longer
+> current — this doc records the original rbpi4b bring-up on a physical
+> Raspberry Pi 4 with a DDJ-FLX4. Production today is the RK3399 (Orange Pi)
+> with a DDJ-400, documented in `docs/rk3399/00-port.md`. Kept here as
+> reference for the Pi 4/FLX4 bring-up history, not rewritten.
+
 This is the current target: `rbp` (the XDJ-RX3 standalone rekordbox player) on a
 **Raspberry Pi 4B**, rendering to an **HDMI monitor**, playing through a
 **DDJ-FLX4**, driven by a mouse or a touchscreen. The Denon SC Live 4 is gone;

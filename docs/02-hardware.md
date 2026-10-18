@@ -5,6 +5,11 @@ Four machines matter here: the **XDJ-RX3** (source of `rbp`), the **Prime GO**
 reference the current tree was built on), and the **Raspberry Pi 4B** (the
 target).
 
+> **Historical note (2026-10-18):** the "target" column below is the
+> upstream rbpi4b project's own Raspberry Pi 4 + DDJ-FLX4 target. This repo
+> (a clone of it) runs on an RK3399 (Orange Pi) with a DDJ-400 in production —
+> see `docs/rk3399/00-port.md`. Kept here as reference, not rewritten.
+
 | | Pioneer XDJ-RX3 (source) | Denon Prime GO (worked) | Denon SC Live 4 (previous) | Raspberry Pi 4B (**target**) |
 |---|---|---|---|---|
 | SoC | NXP i.MX6 Quad, ARMv7 **soft-float** | Rockchip RK3288, ARMv7 hard-float | Rockchip RK3288, ARMv7 hard-float | BCM2711 Cortex-A72 (4 cores), **hard-float**, 32-bit userland — the kernel is arm64 on current images |

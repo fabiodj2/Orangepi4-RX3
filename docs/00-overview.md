@@ -1,5 +1,12 @@
 # 00 — Overview
 
+> **Historical note (2026-10-18):** this doc describes the upstream rbpi4b
+> project's own original design (Raspberry Pi 4 + DDJ-FLX4). This repo (a
+> clone of it) runs on an RK3399 (Orange Pi) with a DDJ-400 in production —
+> see `docs/rk3399/00-port.md`. Kept here as architectural reference, not
+> rewritten; the diagram/table below describe the upstream hardware, not
+> what's actually deployed.
+
 rbpi4b runs the **Pioneer DJ XDJ-RX3 standalone rekordbox player** (`rbp`,
 called `rb` internally) on a **Raspberry Pi 4B**. The XDJ-RX3 firmware builds
 its player as **soft-float ARM32**; a Pi executes soft-float EABI ELF natively —

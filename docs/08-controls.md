@@ -1,5 +1,15 @@
 # 08 — Controls (MIDI control surface → rbp keycodes)
 
+> **Historical note (2026-10-18):** this doc documents the original rbpi4b
+> bring-up on a physical Raspberry Pi 4 with a DDJ-FLX4 controller. The
+> specifics below (`map_flx4.c`, its MIDI tables, `RB_MIDI_MAP`/`RB_MIDI_IN_MATCH`
+> defaults) describe that exact combination and have not been re-verified for
+> the RK3399 + DDJ-400 setup this repo actually runs in production today — see
+> `docs/rk3399/00-port.md` for the current config and the sibling
+> `RX3-RK3399-DDJ400` project's `docs/12-ddj400.md` for the verified DDJ-400
+> MIDI mapping (the same `ddj400-bridge.c` now lives in this repo too, under
+> `scripts/rk3399/device/`). Kept here as reference, not duplicated/rewritten.
+
 Transport, deck, mixer, jog, pads and FX are driven from a MIDI control
 surface, and rbp's own LED and VU state is mirrored back onto the panel. On the
 Pi the surface is a **DDJ-FLX4** (`map_flx4.c`, the compiled-in default, see

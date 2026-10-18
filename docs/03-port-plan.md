@@ -1,5 +1,11 @@
 # 03 — Port plan (reuse map + what changes)
 
+> **Historical note (2026-10-18):** this doc describes the upstream rbpi4b
+> project's own Denon SC Live 4 → Raspberry Pi 4 + DDJ-FLX4 port plan. This
+> repo (a clone of it) runs on an RK3399 (Orange Pi) with a DDJ-400 in
+> production — see `docs/rk3399/00-port.md`. Kept here as reference, not
+> rewritten.
+
 Moving the port from the Denon SC Live 4 to a Raspberry Pi 4B replaces the
 *device* and nothing else. This doc is the map of what is reused verbatim, what
 had to change, and the order to build it. The plan of record, with the bring-up

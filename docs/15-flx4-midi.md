@@ -1,5 +1,12 @@
 # 15 — DDJ-FLX4 MIDI
 
+> **Historical note (2026-10-18):** the production controller today is a
+> **DDJ-400**, via `scripts/rk3399/device/ddj400-bridge.c` — see
+> [19 — DDJ-400 MIDI](19-ddj400-midi.md). `map_flx4.c`/`knobshim.so` below are
+> not loaded in that stack (`PRELOAD` in `start-rk3399.sh` doesn't include
+> `knobshim.so`) but are kept as working, tested code, not deleted — this
+> doc stays as its reference, unchanged.
+
 The DDJ-FLX4 is the control surface for the Pi target, and
 `scripts/shims/map_flx4.c` is its map. This document is two things: the **record
 of what that map says the unit sends** (with the source of every number and an

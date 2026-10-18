@@ -3,8 +3,17 @@
 Documentation for the XDJ-RX3 `rb` → **Raspberry Pi 4B** port, with the previous
 Denon SC Live 4 target retained as the reference the port started from.
 
-**Start with [13 — Raspberry Pi 4](13-raspberrypi4.md)** if you are bringing a
-unit up; it is the target document and links out to the rest.
+> **Production today (2026-10-18) is a different target**: an **RK3399
+> (Orange Pi) with a DDJ-400**, not the Raspberry Pi 4 + DDJ-FLX4 this
+> `docs/` tree was originally written for. **Start with
+> [rk3399/00-port](rk3399/00-port.md)** for that, and
+> [19 — DDJ-400 MIDI](19-ddj400-midi.md) for the controller mapping. The
+> numbered docs below (00-18) remain as the Pi 4/FLX4 bring-up reference —
+> accurate for that hardware, not re-verified for the RK3399/DDJ-400 one.
+
+**Start with [13 — Raspberry Pi 4](13-raspberrypi4.md)** if you are bringing up
+the original Pi 4 + DDJ-FLX4 target; it is that document and links out to the
+rest of this numbered set.
 
 | # | Document | What it covers |
 |---|---|---|
@@ -22,10 +31,11 @@ unit up; it is the target document and links out to the rest.
 | 11 | [runtime-launcher](11-runtime-launcher.md) | launch sequence / systemd integration |
 | 12 | [troubleshooting](12-troubleshooting.md) | symptom → cause → fix |
 | 13 | [raspberrypi4](13-raspberrypi4.md) | **the target**: image, `cmdline.txt`, present modes, pointing, audio, controls, USB, launcher, boot time, bring-up order |
-| 15 | [flx4-midi](15-flx4-midi.md) | the DDJ-FLX4 map: the tables, their source, the dump procedure, and what is still unverified |
+| 15 | [flx4-midi](15-flx4-midi.md) | the DDJ-FLX4 map: the tables, their source, the dump procedure, and what is still unverified. Kept as reference for `map_flx4.c`/`knobshim.so`, which still exist but are not loaded in the current DDJ-400 stack |
 | 16 | [input-and-hotplug](16-input-and-hotplug.md) | the keyboard map's open defects: the lost key release, the arrow sign, Enter, hot-swap, the FLX4 startup thump |
 | 17 | [rx3-flx4-comparison](17-rx3-flx4-comparison.md) | the sibling port read against this one: `doctor`, the run-time object scan, the firmware's own LED period — and where the sibling is behind. Their read-only USB overlay was read and **discarded**, not a candidate here |
 | 18 | [prodjlink](18-prodjlink.md) | `netshim.so`: rbp's Pro DJ Link stack over `wlan0`, the twelve functions hardcoded to `eth0`, the three interposed calls, the whitelist, and the load-order contract with `fbshim` — **built and host-verified, not deployed** |
+| 19 | [ddj400-midi](19-ddj400-midi.md) | **the real production controller**: full DDJ-400 MIDI map, the bridge architecture, and audio/gain staging. Brought in 2026-10-18 from the sibling `RX3-RK3399-DDJ400` project |
 
 There is no document 14: the port plan numbers the FLX4 runbook 15 and defines
 nothing at 14, so the gap is left rather than renumbered.

@@ -1,5 +1,10 @@
 # 16 — Keyboard input, hot-plug, and the FLX4 startup thump
 
+> **Historical note (2026-10-18):** this doc records observations made on the
+> original Pi 4 + DDJ-FLX4 bring-up (**2026-09-26**). Not re-verified against
+> the RK3399 + DDJ-400 production setup — see `docs/rk3399/00-port.md` for
+> that. Kept here as reference, not rewritten.
+
 Five observations the operator made on the unit on **2026-09-26**, and what
 measuring them turned up. Each now has an answer, and for two of them the answer
 was the same defect, found while measuring the others: a key release was being

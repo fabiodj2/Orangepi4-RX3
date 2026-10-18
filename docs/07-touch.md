@@ -1,5 +1,11 @@
 # 07 — Touch / pointing
 
+> **Historical note (2026-10-18):** this doc records the original Pi 4
+> bring-up, where there was no touchscreen (HDMI monitor + mouse/pointer
+> only) and the controller was a DDJ-FLX4. Production today is the RK3399
+> (Orange Pi) with its own touchscreen and a DDJ-400 — see
+> `docs/rk3399/00-port.md`. Kept here as reference, not rewritten.
+
 An HDMI monitor has no touchscreen, so on the Pi this subsystem is really
 **pointing**: `rbp` is driven by a mouse, a trackball, or a USB touchscreen if
 you have one. The rbp-facing contract does not change — it still expects a

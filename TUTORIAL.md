@@ -1,5 +1,12 @@
 # Tutorial — run `rb` on a Raspberry Pi 4B
 
+> **Historical note (2026-10-18):** this tutorial walks through the original
+> upstream rbpi4b target — a physical Raspberry Pi 4 with a DDJ-FLX4. The
+> actual production setup this repo runs today is an **RK3399 (Orange Pi)
+> with a DDJ-400**, started with `sudo sh scripts/rk3399/start-rk3399.sh
+> start` — see `docs/rk3399/00-port.md` for that path end to end. Kept here
+> as reference for the Pi 4/FLX4 route, not rewritten.
+
 End-to-end: from the extracted XDJ-RX3 assets to `rbp` running on the Pi.
 Everything targets a **Pi 4B on Pi OS Lite 32-bit (Bookworm)** with an HDMI
 monitor and a DDJ-FLX4.

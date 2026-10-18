@@ -4,6 +4,12 @@ Symptom → cause → fix. Rows are grouped by subsystem; the ones marked
 **(previous target)** are kept because they explain a design decision in this
 port, even though the hardware that produced them is gone.
 
+> **Historical note (2026-10-18):** most rows below were measured on the
+> original Pi 4 + DDJ-FLX4 bring-up and have not been re-verified against the
+> RK3399 + DDJ-400 production setup (`docs/rk3399/00-port.md`). Same
+> "hardware that produced them is gone" caveat as the line above, one step
+> further — kept here as reference, not rewritten.
+
 **Start here.** Before working down any table, run the unit's own check:
 
 ```sh

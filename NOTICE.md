@@ -68,9 +68,11 @@ The scripts here operate on files **you** supply.
 *Pioneer DJ*, *AlphaTheta*, *rekordbox*, *XDJ-RX3*, *CDJ* and related marks are
 trademarks of their respective owners. *Denon DJ*, *SC Live 4*, *Engine OS* and
 *Prime GO* are trademarks of inMusic Brands, Inc. *Raspberry Pi* and *Raspberry
-Pi OS* are trademarks of Raspberry Pi Ltd. *DDJ-FLX4* is a Pioneer DJ product
-name, referenced here only to say which controller the port targets. All
-trademarks are used here in a descriptive, nominative sense only.
+Pi OS* are trademarks of Raspberry Pi Ltd. *DDJ-400* and *DDJ-FLX4* are
+Pioneer DJ product names, referenced here only to say which controllers this
+project supports (DDJ-400 in current production; DDJ-FLX4 from the original
+Raspberry Pi 4 port, kept as working code). All trademarks are used here in a
+descriptive, nominative sense only.
 
 ## Third-party components
 

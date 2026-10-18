@@ -1,5 +1,15 @@
 # 09 — Audio
 
+> **Historical note (2026-10-18):** this doc documents the original rbpi4b
+> bring-up on a physical Raspberry Pi 4 with a DDJ-FLX4's USB audio interface.
+> The ALSA card name, buffer/period sizes and channel counts below were
+> measured with that exact combination and have not been re-verified for the
+> RK3399 + DDJ-400 setup this repo actually runs in production today (the
+> DDJ-400's own numbers — `hw:CARD=DDJ400,DEV=0`, 4ch, master on 0-1/headphone
+> on 2-3 — are in the sibling `RX3-RK3399-DDJ400` project's `docs/12-ddj400.md`
+> §8, and `audioshim.c` here is now that same DDJ-400 implementation, not the
+> FLX4 one this doc describes). Kept here as reference, not rewritten.
+
 On the Pi the audio path is the **DDJ-FLX4's USB audio**: master out to its
 RCA/XLR outputs, headphones and cue out of its jack. There is one real device
 and one real stream; everything the shim does is about putting rbp's three

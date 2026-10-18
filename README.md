@@ -171,9 +171,11 @@ full hot-cue pass. See the *Open* section of [docs/rk3399/00-port.md](docs/rk339
 
 ## Running it
 
-The runtime chroot (`work/runtime/rx3`) and the companion project
-(`../RX3-RK3399-DDJ400`, for `ddj400-bridge`, `usb-watch.sh` and the DDJ-400
-shims) must be present; neither is in this repository.
+The runtime chroot (`work/runtime/rx3`) must be present (build it from source;
+not in this repository). As of 2026-10-18 this repo is self-contained for
+everything else — `ddj400-bridge`, `usb-watch.sh`, `keyshim.c`, `memshim.c`
+and `audioshim.c` were brought in from the sibling `RX3-RK3399-DDJ400`
+project, which this repo no longer depends on at build or run time.
 
 ```bash
 # install, enable at boot and start
