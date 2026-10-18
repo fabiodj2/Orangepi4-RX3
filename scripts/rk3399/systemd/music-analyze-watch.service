@@ -1,0 +1,18 @@
+[Unit]
+Description=rx3-analyze: watch USB mounts and enqueue Tier-1 analysis jobs
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/music-analyze-watch.sh
+Restart=on-failure
+RestartSec=5
+Nice=10
+# Tier 1 only touches the filesystem watch and a FIFO -- negligible
+# memory, no ceiling needed.
+User=orangepi
+Group=orangepi
+
+[Install]
+WantedBy=multi-user.target

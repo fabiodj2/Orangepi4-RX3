@@ -1,0 +1,27 @@
+[Unit]
+Description=rx3-analyze: Tier-2 heavy analysis for track %i (manual trigger only)
+# Deliberately NOT in [Install] / WantedBy anything -- this unit is never
+# enabled and never auto-starts. It exists to be started by hand:
+#   systemctl set-environment RX3_ANALYZE_HEAVY_AUDIO=/path/to/track.wav
+#   systemctl start music-analyze-heavy@<track-id>.service
+# Never while a deck is playing -- see docs/rk3399/01-music-analysis.md.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/music-analyze-heavy.sh ${RX3_ANALYZE_HEAVY_AUDIO} %i
+
+# ---- the safeguards the OOM near-miss made non-negotiable ----
+# Hard ceiling: measured RSS was 1.1-1.4 GiB; this gives headroom but still
+# caps it well below "can starve rbp, under either stack".
+MemoryMax=1536M
+MemoryHigh=1200M
+# Killed FIRST if the kernel needs a victim -- never rbp. This is the
+# inverse of what almost happened during benchmarking.
+OOMScoreAdjust=900
+# Measured: a free scheduler put this on an A72 and finished 4.6x faster
+# than pinned to an A53 (80s vs 372s). Let it float; do not pin it to the
+# A53 set the way the Tier-1 worker does.
+Nice=19
+CPUWeight=10
+User=orangepi
+Group=orangepi
