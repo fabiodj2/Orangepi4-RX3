@@ -1,4 +1,4 @@
-# rbpi4b — `master`: XDJ-RX3 player on the Orange Pi 4 LTS (RK3399) + DDJ-400
+#  `master`: XDJ-RX3 player on the Orange Pi 4 LTS (RK3399) + DDJ-400
 
 Credit to: [![Instagram: @i.erhan.es](https://img.shields.io/badge/Instagram-%40i.erhan.es-E4405F?logo=instagram&logoColor=white)](https://instagram.com/i.erhan.es) for the original base of this code.
 
