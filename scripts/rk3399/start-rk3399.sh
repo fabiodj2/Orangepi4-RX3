@@ -23,6 +23,13 @@ DDJ="$OLD/work/build/host/ddj400-bridge"
 WATCHER="$OLD/scripts/rb/device/usb-watch.sh"
 OLD_LAUNCHER="$OLD/scripts/rb/start-rk3399-ddj400.sh"
 HP_GAIN=${RX3_HP_GAIN_X:-4}
+# Digital master gain in dB, applied in audioshim.c's scale_master_s24()
+# (soft-knee limited, not hard-clamped -- see that file). +21 confirmed
+# live 2026-10-18 by ear on real monitors: loud passages peak around
+# -2.5dBFS, master_limited stayed 0, operator confirmed "som bom, limpo,
+# sem estalo". Replaces the old fixed +9dB, which left a lot of headroom
+# unused (see audioshim.c's comment on master_gain_linear()).
+MASTER_GAIN_DB=${RX3_MASTER_GAIN_DB:-21}
 USB_SEG=${USBWATCH_SEG:-/usb}
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
@@ -260,6 +267,7 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     FB_VSYNC_RATE="${RB_FB_VSYNC_RATE:-0}" \
     RX3_AUDIO_DEVICE='hw:CARD=DDJ400,DEV=0' \
     RX3_HP_GAIN_X="$HP_GAIN" \
+    RX3_MASTER_GAIN_DB="$MASTER_GAIN_DB" \
     RX3_KEYSHIFT="${RX3_KEYSHIFT:-1}" \
     RX3_STEMS_DIR="${RX3_STEMS_DIR:-/root/pdj/RX3_STEMS}" \
     LD_PRELOAD="$PRELOAD" \
