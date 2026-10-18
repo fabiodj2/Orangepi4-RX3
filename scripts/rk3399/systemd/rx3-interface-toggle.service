@@ -1,0 +1,14 @@
+# Base unit, installed directly by install-service.sh (no drop-in needed) --
+# points straight at this repo's own toggle-interface.sh. See
+# docs/rk3399/01-tutorial.md §9 for why this exists as its own file instead
+# of a drop-in over some other project's unit.
+[Unit]
+Description=Toggle RX3 graphical interface
+After=local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/bin/sh /home/orangepi/RX3-RBPI4B-RK3399/scripts/rk3399/toggle-interface.sh

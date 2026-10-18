@@ -262,54 +262,19 @@ fail enumeration in the sibling project's own testing). Boot the board.
 sudo sh scripts/rk3399/install-service.sh
 ```
 
-This installs and starts `rx3-rbpi4b-rk3399.service` and a drop-in that
-points the DDJ-400's interface-toggle gesture (hold a button combination —
-see `docs/08-controls.md`) at this repo's own `scripts/rk3399/toggle-interface.sh`.
+This installs and starts `rx3-rbpi4b-rk3399.service`, and (as of
+2026-10-18) the base `rx3-interface-toggle.path`/`.service` pair too —
+the DDJ-400's interface-toggle gesture (hold a button combination, see
+`docs/08-controls.md`), pointing directly at this repo's own
+`scripts/rk3399/toggle-interface.sh`. A fresh install needs nothing extra
+for this: `install-service.sh` installs both units itself and enables
+`rx3-interface-toggle.path`.
 
-**Gap found while writing this tutorial, not yet closed in
-`install-service.sh` itself**: that drop-in only takes effect if the
-*base* `rx3-interface-toggle.path`/`.service` pair already exists on the
-system — on the unit this was developed on, those two files predate every
-install script in either this repo or the sibling one, and nothing
-currently creates them from scratch. If `systemctl status
-rx3-interface-toggle.path` says the unit isn't found, create the base
-pair yourself before running `install-service.sh`:
-
-```sh
-sudo tee /etc/systemd/system/rx3-interface-toggle.path >/dev/null <<'EOF'
-[Unit]
-Description=Watch RX3 interface toggle request
-
-[Path]
-PathExists=/run/rx3-interface-toggle.request
-Unit=rx3-interface-toggle.service
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo tee /etc/systemd/system/rx3-interface-toggle.service >/dev/null <<'EOF'
-[Unit]
-Description=Toggle RX3 graphical interface
-After=local-fs.target
-Conflicts=shutdown.target
-
-[Service]
-Type=oneshot
-User=root
-Group=root
-ExecStart=/bin/sh /home/orangepi/RX3-RBPI4B-RK3399/scripts/rk3399/toggle-interface.sh
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now rx3-interface-toggle.path
-```
-
-Note this version points `ExecStart` straight at this repo already — on a
-fresh install you do not need `install-service.sh`'s drop-in at all for
-this part; it only exists because the unit on the original development
-machine still carries a leftover `ExecStart` pointing at the old sibling
-project underneath it.
+(Earlier versions of this script only installed a drop-in, which needed a
+*base* unit from somewhere else to already exist — a real gap on a
+genuinely fresh system, since nothing created that base pair either. The
+drop-in is gone now; the base units it used to override are installed
+directly, already pointing at the right place.)
 
 If you're skipping the toolkit/legacy core (§7), start the service with
 that override:

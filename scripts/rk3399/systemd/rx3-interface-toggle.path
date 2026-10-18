@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch RX3 interface toggle request
+
+[Path]
+PathExists=/run/rx3-interface-toggle.request
+Unit=rx3-interface-toggle.service
+
+[Install]
+WantedBy=multi-user.target
