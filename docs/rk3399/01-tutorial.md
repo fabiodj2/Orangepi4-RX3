@@ -9,13 +9,14 @@ build or run time (see `docs/rk3399/00-port.md`'s consolidation note).
 
 Following this project's own convention (`docs/README.md`, "How to read a
 claim"): a step marked **verified** was actually run, on this exact unit,
-during this port's history. A step marked **assembled, not verified as one
-pass** combines pieces that are each individually documented and verified
-*separately* (the generic Pi 4 chroot build, the RK3399-specific DirectFB
-patches) but has not been run start-to-finish as a single from-zero
-sequence on a brand-new board. Treat those steps as the best current
-understanding, not a transcript — if something doesn't match, trust the
-referenced source doc over this one.
+during this port's history (not necessarily as part of the very first
+bring-up — §3's chroot build, for instance, was run for real specifically
+while writing this tutorial, 2026-10-18, using this unit's own already-
+extracted firmware assets). A step without that marker combines pieces
+that are each individually documented and verified *separately* but has
+not been run start-to-finish as a single sequence. Treat those steps as
+the best current understanding, not a transcript — if something doesn't
+match, trust the referenced source doc over this one.
 
 ## 0. What you need
 
@@ -80,33 +81,58 @@ The systemd unit this tutorial installs later (§10) hardcodes
 exactly that path and user, or edit `scripts/rk3399/systemd/rx3-rbpi4b-rk3399.service`
 to match your own.
 
-## 3. Build the runtime chroot — **assembled, not verified as one pass**
+## 3. Build the runtime chroot — **verified 2026-10-18**
 
 `scripts/build-chroot.sh` (inherited from the upstream Raspberry Pi 4 port)
 assembles a complete soft-float chroot from the extracted assets from §0
 and tars it as `work/rbpi4b-pi4.tgz`, meant to be `scp`'d to a separate
 Pi and untarred by `scripts/device/install.sh`. On the Orange Pi, build
 host and target are the **same machine**, so instead of that remote-deploy
-round trip, untar the chroot directly where the RK3399 launcher expects it:
+round trip, untar the chroot directly where the RK3399 launcher expects it.
+**It needs root** (tar has to recreate real device nodes — `/dev/null`,
+`/dev/tty`, `/dev/console` — inside the staged rootfs, which a non-root
+`tar` silently can't do, failing the whole build with "Cannot mknod:
+Operation not permitted"):
 
 ```sh
-RX3=/path/to/extracted scripts/build-chroot.sh
-mkdir -p work/runtime
-tar -xzf work/rbpi4b-pi4.tgz -C work/runtime rbx3-run
-mv work/runtime/rbx3-run work/runtime/rx3
+sudo RX3=/path/to/extracted OUT=work bash scripts/build-chroot.sh
+sudo mkdir -p work/runtime
+sudo tar -xzf work/rbpi4b-pi4.tgz -C work/runtime
+sudo mv work/runtime/rbx3-run work/runtime/rx3
 ```
 
-This step has not been exercised end-to-end on a genuinely blank board in
-this project's history — the chroot actually running today
-(`work/runtime/rx3`) was produced by copying an already-built chroot from
-the sibling `RX3-RK3399-DDJ400` project (`rsync -aHx`, see
-`docs/rk3399/00-port.md`'s "Runtime" section) rather than by running
-`build-chroot.sh` directly. The script itself and the firmware-asset
-pipeline it calls (`docs/04`, `docs/05`) are each independently verified;
-only this *specific combination* (its output, untarred straight into
-`work/runtime/rx3`) is new. If something in the chroot doesn't come up
-right, that is the first place to look — `docs/05-chroot.md`'s own "Notes"
-section (exec bits, `etc/mtab`) is the most likely gap.
+This exact combination (run this script, by hand, with real extracted
+assets, as a single pass) had never been exercised end-to-end on this
+unit before — the chroot that was actually running in production through
+most of this port's history was produced by copying an already-built
+chroot from the sibling `RX3-RK3399-DDJ400` project instead (`rsync -aHx`,
+see `docs/rk3399/00-port.md`'s "Runtime" section). Run for real while
+writing this tutorial, using this unit's own extracted firmware assets
+(never uploaded anywhere — see `NOTICE.md`): it completed cleanly end to
+end, and every hash matched `docs/04-firmware-assets.md`'s documented
+table exactly at each stage (`rbp-audio` stage 1 `3dda2d4e...`, the final
+patched `rbp` `990404244853a7d613be3d469ad1bc1d` — "stage 2+3, 32bpp, the
+default and what the unit runs"). `chroot .../rbx3-run /bin/sh -c 'echo ok'`
+on the result printed `ok`. Output was 33 MB compressed.
+
+Two things to know about what this step does and doesn't give you yet:
+
+* `build-chroot.sh` already builds and deploys its *own* copies of
+  `audioshim.so`, `fbshim.so` and `knobshim.so` from `scripts/shims` as
+  part of this same run — and since this repo's `audioshim.c` is the
+  DDJ-400 one as of the 2026-10-18 consolidation, that automatic copy is
+  already correct. But it deploys `fbshim.so` to `usr/lib/fbshim.so`,
+  **not** `usr/lib/rbpi4b/fbshim.so`, which is the path the RK3399
+  launcher actually expects (§5 below fixes this), and it does not build
+  or deploy `keyshim.so`/`memshim.so`/`netshim.so` at all (FLX4 uses
+  `knobshim.so` instead; those three are DDJ-400-specific, also added in
+  §5).
+* The DirectFB stack this step installs is the **generic**, unpatched
+  1.4.16 build (whatever `$DFB` points at, or `work/dfb` if already built
+  from a previous pass) — it works (the chroot loads, `rbp` would run),
+  but without the RK3399 KMS/colorkey patches from §4 below, display is
+  the slow deferred-I/O `/dev/fb0` path, not what's actually deployed in
+  production.
 
 Verify the chroot is sane before going further:
 
