@@ -24,12 +24,15 @@ WATCHER="$OLD/scripts/rb/device/usb-watch.sh"
 OLD_LAUNCHER="$OLD/scripts/rb/start-rk3399-ddj400.sh"
 HP_GAIN=${RX3_HP_GAIN_X:-4}
 # Digital master gain in dB, applied in audioshim.c's scale_master_s24()
-# (soft-knee limited, not hard-clamped -- see that file). +21 confirmed
-# live 2026-10-18 by ear on real monitors: loud passages peak around
-# -2.5dBFS, master_limited stayed 0, operator confirmed "som bom, limpo,
-# sem estalo". Replaces the old fixed +9dB, which left a lot of headroom
-# unused (see audioshim.c's comment on master_gain_linear()).
-MASTER_GAIN_DB=${RX3_MASTER_GAIN_DB:-21}
+# (soft-knee limited, not hard-clamped -- see that file). The first +21dB
+# pass (2026-10-18) was tuned with TRIM set low; re-tuned the same day with
+# TRIM/MASTER LEVEL at their correct operating position (meter's orange
+# segment on peaks, MASTER at max) -- that condition runs far hotter
+# pre-gain, and +21 overshot into audible saturation. +22 is the value
+# that stayed clean at that TRIM/MASTER position (operator confirmed "som
+# limpo" each step up, master_limited read 0). See audioshim.c's comment
+# on master_gain_linear() for the full numbers from both passes.
+MASTER_GAIN_DB=${RX3_MASTER_GAIN_DB:-22}
 USB_SEG=${USBWATCH_SEG:-/usb}
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
