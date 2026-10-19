@@ -22,8 +22,14 @@ match, trust the referenced source doc over this one.
 
 **Hardware:**
 * Orange Pi 4 LTS (RK3399, 4 GB), a `≥`8 GB SD card or eMMC.
-* An HDMI monitor.
-* A USB touchscreen (this port was built and verified against a
+* An HDMI monitor, **or** a USB-C monitor that carries both video (DP Alt
+  Mode) and touch over a single cable — both verified live on this unit
+  (2026-10-18 for the single-cable USB-C setup; see
+  `docs/rk3399/00-port.md`'s hardware note). Either way the touch digitizer
+  shows up as the same evdev node regardless of which physical cable
+  carries it.
+* A USB touchscreen if not already combined into the monitor's own USB-C
+  cable above (this port was built and verified against a
   `wch.cn TouchScreen`, 1920×1080 panel — a plain USB mouse also works,
   `rbp` is driven by any evdev pointer; see `docs/07-touch.md`).
 * A Pioneer **DDJ-400**, connected **directly** to a USB port (not through a
@@ -252,9 +258,11 @@ either, but follows directly from how `LD_PRELOAD` resolves its list.
 
 ## 8. Connect the hardware
 
-Plug in the HDMI monitor, the USB touchscreen (or mouse), and the DDJ-400
-**directly** into a USB-A port on the board (a bus-powered hub was seen to
-fail enumeration in the sibling project's own testing). Boot the board.
+Plug in the monitor (HDMI, or a single USB-C cable carrying both video and
+touch — see §0), the USB touchscreen or mouse if it's a separate cable,
+and the DDJ-400 **directly** into a USB-A port on the board (a bus-powered
+hub was seen to fail enumeration in the sibling project's own testing).
+Boot the board.
 
 ## 9. systemd service
 

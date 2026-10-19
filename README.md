@@ -3,7 +3,9 @@
 Credit to: [![Instagram: @i.erhan.es](https://img.shields.io/badge/Instagram-%40i.erhan.es-E4405F?logo=instagram&logoColor=white)](https://instagram.com/i.erhan.es) for the original base of this code.
 
 **Run the Pioneer DJ XDJ-RX3 *rekordbox* standalone player on an Orange Pi 4 LTS
-(Rockchip RK3399), driven by a Pioneer DDJ-400, with a USB touch monitor.**
+(Rockchip RK3399), driven by a Pioneer DDJ-400, with a USB touch monitor —
+video and touch over a single USB-C cable work too, see
+[docs/rk3399/01-tutorial.md](docs/rk3399/01-tutorial.md).**
 
 This branch runs the ARM32 `rekordbox` player application (`rbp`) extracted from
 **XDJ-RX3 firmware v1.20** on an **RK3399** board. It takes the display and touch

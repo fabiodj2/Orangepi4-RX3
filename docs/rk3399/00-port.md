@@ -530,6 +530,17 @@ restores the old any-core behavior if a future regression turns up). CPU core
 balance item closed: gui_task gets both A72 cores exclusively, JuceALSA runs
 on the A53s under RT priority, decoders share the A53s with it unrestricted.
 
+## Hardware: single USB-C cable for video + touch (2026-10-18)
+
+Verified live: video (DP Alt Mode) and touch now run over a single USB-C
+cable from the board to the monitor, replacing the earlier two-cable setup
+(HDMI for video, a separate USB-A run for the `wch.cn TouchScreen` touch
+digitizer). Confirmed working end to end after a reboot — deck view on
+screen, touch responding, controls and audio on the DDJ-400 all tested by
+the operator. No code or config change was needed on this repo's side: the
+touch device still enumerates as the same `wch.cn TouchScreen` evdev node
+and DirectFB/`fbshim.so` don't care which physical cable carried it.
+
 ## Open
 
 * Remaining audio clicks: RT priority for `JuceALSA` applied (`rt_group_sched=0` in
