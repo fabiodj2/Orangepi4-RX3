@@ -541,6 +541,42 @@ the operator. No code or config change was needed on this repo's side: the
 touch device still enumerates as the same `wch.cn TouchScreen` evdev node
 and DirectFB/`fbshim.so` don't care which physical cable carried it.
 
+`lsusb` after switching to the single USB-C cable, same unit:
+
+```
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 003 Device 002: ID 058f:6387 Alcor Micro Corp. Flash Drive
+Bus 004 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 005 Device 001: ID 1d6b:0001 Linux Foundation 1.1 root hub
+Bus 006 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 006 Device 003: ID 2b73:0026 Pioneer DJ Corporation DDJ-400
+Bus 007 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 007 Device 002: ID 067b:2586 Prolific Technology, Inc. USB 2.0 Hub
+Bus 007 Device 003: ID 27c0:0859 Cadwell Laboratories, Inc. TouchScreen
+Bus 008 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+```
+
+```
+/:  Bus 007.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+    |__ Port 001: Dev 002, If 0, Class=Hub, Driver=hub/4p, 12M
+        |__ Port 004: Dev 003, If 0, Class=Human Interface Device, Driver=usbhid, 12M
+        |__ Port 004: Dev 003, If 1, Class=Human Interface Device, Driver=usbhid, 12M
+        |__ Port 004: Dev 003, If 2, Class=Human Interface Device, Driver=usbhid, 12M
+```
+
+The touch panel (USB ID `27c0:0859`, the same `wch.cn TouchScreen` the
+kernel's own string descriptor names — `lsusb`'s numeric vendor-ID
+database mislabels `27c0` as "Cadwell Laboratories," a stale/reused
+entry, not a different device) sits behind a Prolific `067b:2586` USB 2.0
+hub, Bus 007 — almost certainly the monitor's own internal hub that fans
+its single upstream USB-C link back out to a touch HID endpoint. The
+DP Alt Mode video lane is a separate physical signal inside the same
+cable and doesn't show up in `lsusb`/USB device-tree output at all, so
+there's nothing to capture for that half beyond the picture actually
+appearing on screen.
+
 ## Open
 
 * Remaining audio clicks: RT priority for `JuceALSA` applied (`rt_group_sched=0` in
