@@ -37,15 +37,33 @@
 # Never write to /tmp/udev_usbctn* — that triggers the cosmetic
 # "USB Error. Remove the device." caution.
 #
+# TWO SLOTS BY PHYSICAL PORT (2026-10-25, Orange Pi 3 LTS). With USBWATCH_PORT1
+# set, each slot of rbp is fed from its own physical port(s) instead:
+#   slot 1  /media/usb1/sda1  <- a device under any fragment in USBWATCH_PORT1
+#   slot 2  /media/usb2/sda1  <- a device under any fragment in USBWATCH_PORT2
+# Each list is space-separated sysfs path fragments, e.g. the H6's USB 3.0 port
+# "5200000.usb/" and its second USB 2.0 port "5311000.usb/ 5311400.usb/" (EHCI
+# and its OHCI companion: a full-speed device enumerates on the companion).
+# Devices on any other port take no slot. Slot 2's FIFO is /tmp/udev_usb2 and
+# its chroot path /media/usb2/sda1, rbp's own second media slot (the Pi 4 port,
+# scripts/device/usb-watch.sh, fed both since 2026-10-07). Readiness is the
+# Pi 4's witness: rbp holding THIS slot's export.pdb open, read from
+# /proc/<pid>/fd as the chroot-bind path, plus slot 1's detect flag as before.
+# USBWATCH_PORT1 unset = the single-slot behaviour above, on USBWATCH_SEG.
+#
 # Usage:  sh /home/user/usb-watch.sh start|stop|status|run
 # Env:    USBWATCH_SEG="/usb1/"   sysfs path fragment of the watched root hub
+#         USBWATCH_PORT1/PORT2    per-slot physical ports (see above)
 #         USBWATCH_POLL=1         poll interval seconds
+#         USBWATCH_HC_RECOVER     1 = rebind a USB host controller the kernel
+#                                 declared dead (default 1 with PORT1, else 0)
 # =============================================================================
 
-MNT="${USBWATCH_MOUNT:-/media/usb1/sda1}"
 CHROOT="${RX3_RUNTIME:-/home/orangepi/RX3-RBPI4B-RK3399/work/runtime/rx3}"
-CH_MNT="$CHROOT/media/usb1/sda1"
-FIFO="$CHROOT/tmp/udev_usb1"
+PORT1="${USBWATCH_PORT1:-}"
+PORT2="${USBWATCH_PORT2:-}"
+if [ -n "$PORT1" ] && [ -n "$PORT2" ]; then SLOTS="1 2"; else SLOTS="1"; fi
+if [ -n "$PORT1" ]; then HC_RECOVER="${USBWATCH_HC_RECOVER:-1}"; else HC_RECOVER="${USBWATCH_HC_RECOVER:-0}"; fi
 LOG="${USBWATCH_LOG:-$CHROOT/tmp/usbwatch.log}"
 PIDFILE="${USBWATCH_PIDFILE:-$CHROOT/tmp/usbwatch.pid}"
 SEG="${USBWATCH_SEG:-/usb5/}"
@@ -53,6 +71,15 @@ POLL="${USBWATCH_POLL:-1}"
 TIMEOUT=$(command -v timeout 2>/dev/null || echo "")
 
 log() { echo "$(date '+%F %T') $$ $*" >> "$LOG"; }
+
+# --- the slots: rbp's fixed paths, one set per slot -------------------------
+slot_mnt()   { [ "$1" = 2 ] && echo /media/usb2/sda1 || echo "${USBWATCH_MOUNT:-/media/usb1/sda1}"; }
+slot_chmnt() { echo "$CHROOT/media/usb$1/sda1"; }
+slot_path()  { echo "/media/usb$1/sda1"; }        # what rbp sees, in the chroot
+slot_fifo()  { echo "$CHROOT/tmp/udev_usb$1"; }
+slot_ports() {                                    # sysfs fragments the slot owns
+    if [ "$1" = 2 ]; then echo "$PORT2"; else echo "${PORT1:-$SEG}"; fi
+}
 
 # --- candidates: every sd* disk on the watched port -------------------------
 # A port can carry several storage devices at once (the user's hub exposes the
@@ -72,13 +99,15 @@ is_system_disk() {
 }
 
 find_sticks() {
+    fports=$(slot_ports "$1")
     for blk in /sys/block/sd*; do
         [ -e "$blk" ] || continue
         tgt=$(readlink -f "$blk" 2>/dev/null) || continue
-        case "$tgt" in
-            *"$SEG"*) : ;;
-            *) continue ;;
-        esac
+        hit=0
+        for frag in $fports; do
+            case "$tgt" in *"$frag"*) hit=1; break ;; esac
+        done
+        [ "$hit" = 1 ] || continue
         d=${blk##*/}
         is_system_disk "$d" && continue
         sz=$(cat "$blk/size" 2>/dev/null || echo 0)
@@ -162,19 +191,19 @@ probe_rekordbox() {
 # 2. otherwise any device with a recognised filesystem (rbp then shows FOLDER)
 find_stick() {
     fallback=""
-    for d in $(find_sticks); do
+    for d in $(find_sticks "$1"); do
         part=$(find_partition "$d") || continue
         fstype=$(blkid -s TYPE -o value "/dev/$part" 2>/dev/null)
         [ -n "$fstype" ] || continue
         if probe_rekordbox "$part"; then
-            log "pick: $d ($part, $fstype) has a rekordbox database"
+            log "pick: slot $1: $d ($part, $fstype) has a rekordbox database"
             echo "$d"
             return 0
         fi
         [ -z "$fallback" ] && fallback="$d ($part, $fstype)"
     done
     if [ -n "$fallback" ]; then
-        log "pick: no rekordbox db found, using $fallback"
+        log "pick: slot $1: no rekordbox db found, using $fallback"
         echo "${fallback%% *}"
         return 0
     fi
@@ -183,7 +212,8 @@ find_stick() {
 
 # --- FIFO notification (never block forever if rbp is down) -----------------
 notify() {
-    msg=$1
+    FIFO=$(slot_fifo "$1")
+    msg=$2
     [ -p "$FIFO" ] || { log "notify: $FIFO missing (rbp down?)"; return 1; }
     if [ -n "$TIMEOUT" ]; then
         "$TIMEOUT" 3 sh -c 'printf "%s" "$1" > "$2"' sh "$msg" "$FIFO" 2>/dev/null \
@@ -205,7 +235,10 @@ notify() {
 
 # --- mount + chroot bind + notify ------------------------------------------
 attach() {
-    dev=$1
+    slot=$1
+    dev=$2
+    MNT=$(slot_mnt "$slot")
+    CH_MNT=$(slot_chmnt "$slot")
     part=$(find_partition "$dev") || { log "attach: no usable partition on $dev"; return 1; }
 
     mkdir -p "$MNT"
@@ -239,10 +272,10 @@ attach() {
     fi
 
     # bind must exist BEFORE rbp inspects the stick's files (export.pdb etc.)
-    notify "umount $MNT"
+    notify "$slot" "umount $(slot_path "$slot")"
     sleep 0.3
-    notify "mount $MNT"
-    log "attach: notified native mount $MNT"
+    notify "$slot" "mount $(slot_path "$slot")"
+    log "attach: slot $slot: notified native mount $(slot_path "$slot")"
 
     # diagnose the rekordbox DB import a few seconds later (best effort)
     if [ "${USBWATCH_PROBE:-1}" = 1 ] && [ -x /home/user/usb-probe.sh ]; then
@@ -253,8 +286,11 @@ attach() {
 
 # --- notify rbp + release mounts --------------------------------------------
 detach() {
-    log "detach: notifying rbp"
-    notify "umount $MNT"
+    slot=$1
+    MNT=$(slot_mnt "$slot")
+    CH_MNT=$(slot_chmnt "$slot")
+    log "detach: slot $slot: notifying rbp"
+    notify "$slot" "umount $(slot_path "$slot")"
     sleep 1
     if mountpoint -q "$CH_MNT"; then umount -l "$CH_MNT"; log "detach: umount -l $CH_MNT"; fi
     if mountpoint -q "$MNT";    then umount -l "$MNT";    log "detach: umount -l $MNT";    fi
@@ -271,74 +307,150 @@ rbp_pid() {
 # watcher keeps re-sending it until DeviceSQL reports the drive READY.
 usb_detected() {
     p=$(rbp_pid); [ -n "$p" ] || return 1
+    # Either slot: rbp holds this slot's export.pdb open (the Pi 4's witness).
+    ls -l "/proc/$p/fd" 2>/dev/null |
+        grep -Fq "$(slot_chmnt "$1")/PIONEER/rekordbox/export.pdb" && return 0
+    [ "$1" = 1 ] || return 1
     v=$(dd if="/proc/$p/mem" bs=4 skip=$((0x03256888 / 4)) count=1 2>/dev/null \
         | od -An -tu4 2>/dev/null | tr -d ' \t')
     [ "$v" = "2" ]
 }
 
+# Per-slot state lives in variables named <field>_<slot> (cur_1, cur_2, ...):
+# POSIX sh has no arrays, so get/set go through eval on these fixed names only.
+sget() { eval "echo \"\${$1_$2}\""; }
+sset() { eval "$1_$2=\$3"; }
+
+renotify() {
+    notify "$1" "umount $(slot_path "$1")"
+    sleep 0.3
+    notify "$1" "mount $(slot_path "$1")"
+}
+
+# One poll tick for one slot: the old single-slot body, unchanged in substance.
+tick_slot() {
+    n=$1
+    rbp=$2
+    devs=$(find_sticks "$n" | tr '\n' ' ')
+    if [ "$devs" != "$(sget devs_last "$n")" ]; then
+        sset devs_last "$n" "$devs"
+        log "slot $n: devices on its port(s): '${devs% }'"
+        sset dev "$n" "$(find_stick "$n" || true)"
+    fi
+    dev=$(sget dev "$n")
+    cur=$(sget cur "$n")
+
+    if [ -n "$dev" ]; then
+        if [ "$dev" != "$cur" ]; then
+            [ -n "$cur" ] && detach "$n"
+            log "attach: slot $n: detected $dev"
+            if attach "$n" "$dev"; then
+                sset cur "$n" "$dev"
+                sset confirm_left "$n" "${USBWATCH_CONFIRM_TRIES:-18}"
+                sset confirm_wait "$n" 5
+            else
+                sset cur "$n" ""
+                sset confirm_left "$n" 0
+            fi
+        elif [ -n "$rbp" ] && [ "$rbp" != "$last_rbp" ]; then
+            log "attach: slot $n: rbp restarted ($last_rbp -> $rbp), re-notifying mount"
+            sleep 2
+            renotify "$n"
+            sset confirm_left "$n" "${USBWATCH_CONFIRM_TRIES:-18}"
+            sset confirm_wait "$n" 5
+        elif [ "$(sget confirm_left "$n")" -gt 0 ] && [ -n "$rbp" ]; then
+            if usb_detected "$n"; then
+                log "confirm: USB$n database READY"
+                sset confirm_left "$n" 0
+            elif [ "$(sget confirm_wait "$n")" -le 0 ]; then
+                sset confirm_left "$n" $(( $(sget confirm_left "$n") - 1 ))
+                sset confirm_wait "$n" 5
+                log "confirm: slot $n not ready yet, re-notifying mount ($(sget confirm_left "$n") left)"
+                renotify "$n"
+            else
+                sset confirm_wait "$n" $(( $(sget confirm_wait "$n") - 1 ))
+            fi
+        fi
+    elif [ -n "$cur" ]; then
+        detach "$n"
+        sset cur "$n" ""
+        sset confirm_left "$n" 0
+    fi
+}
+
+# --- dead host controller recovery -----------------------------------------
+# The H6's xHCI (Orange Pi 3 LTS, legacy 6.12) can die when a hub is pulled out
+# of the USB 3.0 port live: "xhci-hcd xhci-hcd.1.auto: xHCI host controller not
+# responding, assume dead" / "HC died; cleaning up" (2026-10-25). The port then
+# sees nothing until the driver is unbound and bound again -- done by hand that
+# day, and the stick came straight back as USB1. This does the same: every few
+# seconds count the kernel's "HC died" lines; for each new one, rebind that
+# platform device, at most once per HC_RECOVER_GAP seconds per controller. The
+# slot code needs nothing extra: the device vanishes (detach) and comes back
+# (attach) like any unplug/replug.
+HC_RECOVER_GAP=30
+hc_seen=""          # count of "HC died" lines already handled (empty = baseline)
+
+hc_check() {
+    [ "$HC_RECOVER" = 1 ] || return 0
+    lines=$(dmesg 2>/dev/null | grep 'HC died')
+    count=$(printf '%s' "$lines" | grep -c . )
+    if [ -z "$hc_seen" ] || [ "$count" -lt "$hc_seen" ]; then
+        hc_seen=$count          # first look, or the ring buffer wrapped
+        return 0
+    fi
+    [ "$count" -gt "$hc_seen" ] || return 0
+    # "[ 1623.678551] xhci-hcd xhci-hcd.1.auto: HC died; cleaning up" -- the
+    # timestamp may hold a space, so it is cut off before splitting.
+    printf '%s\n' "$lines" | tail -n $((count - hc_seen)) |
+    sed 's/^\[[^]]*\] *//' |
+    while read -r drv devname _rest; do
+        devname=${devname%:}
+        sysdrv=/sys/bus/platform/drivers/$drv
+        [ -e "$sysdrv/$devname" ] || [ -e "$sysdrv/bind" ] || {
+            log "hc: $devname ($drv) died, no platform driver to rebind it"; continue; }
+        stamp=/run/usbwatch-hc-$devname
+        now=$(date +%s)
+        last=$(cat "$stamp" 2>/dev/null || echo 0)
+        if [ $((now - last)) -lt "$HC_RECOVER_GAP" ]; then
+            log "hc: $devname died again within ${HC_RECOVER_GAP}s: not rebinding"
+            continue
+        fi
+        echo "$now" > "$stamp"
+        log "hc: $devname ($drv) died -- unbind + bind"
+        echo "$devname" > "$sysdrv/unbind" 2>/dev/null
+        sleep 2
+        if echo "$devname" > "$sysdrv/bind" 2>/dev/null; then
+            log "hc: $devname rebound"
+        else
+            log "hc: $devname bind FAILED"
+        fi
+    done
+    hc_seen=$count
+}
+
 run() {
-    log "=== usb-watch run: seg '$SEG', poll ${POLL}s ==="
-    cur=""
-    devs_last=""
-    dev=""
+    if [ -n "$PORT1" ]; then
+        log "=== usb-watch run: slot 1 ports '$PORT1', slot 2 ports '${PORT2:-none}', poll ${POLL}s ==="
+    else
+        log "=== usb-watch run: seg '$SEG', poll ${POLL}s ==="
+    fi
+    for n in $SLOTS; do
+        sset cur "$n" ""; sset devs_last "$n" "unset"; sset dev "$n" ""
+        sset confirm_left "$n" 0; sset confirm_wait "$n" 0
+    done
     last_rbp=$(rbp_pid)
-    confirm_left=0      # re-notify attempts remaining for the current attach
-    confirm_wait=0      # poll ticks until the next attempt
+    hc_tick=0
+    hc_check            # baseline: old deaths (before this run) are not ours
 
     while :; do
-        # only re-probe (mounting candidates read-only) when the set of storage
-        # devices changed - e.g. the empty card reader being joined by the stick
-        devs=$(find_sticks | tr '\n' ' ')
-        if [ "$devs" != "$devs_last" ]; then
-            devs_last="$devs"
-            log "devices on watched port: '${devs% }'"
-            dev=$(find_stick) || dev=""
-        fi
-        rbp=$(rbp_pid)
-
-        if [ -n "$dev" ]; then
-            if [ "$dev" != "$cur" ]; then
-                [ -n "$cur" ] && detach
-                log "attach: detected $dev on watched port"
-                if attach "$dev"; then
-                    cur=$dev
-                    confirm_left=${USBWATCH_CONFIRM_TRIES:-18}
-                    confirm_wait=5
-                else
-                    cur=""
-                    confirm_left=0
-                fi
-            elif [ -n "$rbp" ] && [ "$rbp" != "$last_rbp" ]; then
-                log "attach: rbp restarted ($last_rbp -> $rbp), re-notifying mount"
-                sleep 2
-                notify "umount $MNT"
-                sleep 0.3
-                notify "mount $MNT"
-                confirm_left=${USBWATCH_CONFIRM_TRIES:-18}
-                confirm_wait=5
-            elif [ "$confirm_left" -gt 0 ] && [ -n "$rbp" ]; then
-                if usb_detected; then
-                    log "confirm: USB1 database READY"
-                    confirm_left=0
-                elif [ "$confirm_wait" -le 0 ]; then
-                    confirm_left=$((confirm_left - 1))
-                    confirm_wait=5
-                    log "confirm: not ready yet, re-notifying mount (${confirm_left} left)"
-                    notify "umount $MNT"
-                    sleep 0.3
-                    notify "mount $MNT"
-                else
-                    confirm_wait=$((confirm_wait - 1))
-                fi
-            fi
-        else
-            if [ -n "$cur" ]; then
-                detach
-                cur=""
-                confirm_left=0
-            fi
-        fi
-        last_rbp=$rbp
+        hc_tick=$((hc_tick + 1))
+        if [ "$hc_tick" -ge 5 ]; then hc_tick=0; hc_check; fi
+        rbp_now=$(rbp_pid)
+        for n in $SLOTS; do
+            tick_slot "$n" "$rbp_now"
+        done
+        last_rbp=$rbp_now
         sleep "$POLL"
     done
 }
@@ -367,12 +479,14 @@ stop() {
 
 status() {
     echo "pid:         $(cat "$PIDFILE" 2>/dev/null || echo none)"
-    echo "watched:     usb segment '$SEG'"
-    echo "candidates:  $(find_sticks | tr '\n' ' ')"
-    echo "stick:       $(find_stick || echo none)"
-    echo "host mount:  $(mountpoint -q "$MNT" && echo yes || echo no)  ($MNT)"
-    echo "chroot bind: $(mountpoint -q "$CH_MNT" && echo yes || echo no)  ($CH_MNT)"
-    [ -x /home/user/usb-probe.sh ] && sh /home/user/usb-probe.sh -q
+    for n in $SLOTS; do
+        echo "--- slot $n (USB$n)"
+        echo "ports:       '$(slot_ports "$n")'"
+        echo "candidates:  $(find_sticks "$n" | tr '\n' ' ')"
+        echo "host mount:  $(mountpoint -q "$(slot_mnt "$n")" && echo yes || echo no)  ($(slot_mnt "$n"))"
+        echo "chroot bind: $(mountpoint -q "$(slot_chmnt "$n")" && echo yes || echo no)  ($(slot_chmnt "$n"))"
+        echo "ready:       $(usb_detected "$n" && echo yes || echo no)"
+    done
     echo "--- log tail ---"
     tail -15 "$LOG" 2>/dev/null
 }
