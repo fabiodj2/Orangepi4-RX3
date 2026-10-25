@@ -19,13 +19,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 UNIT=rx3-rbpi4b-rk3399.service
 TOGGLE_PATH_UNIT=rx3-interface-toggle.path
 TOGGLE_SERVICE_UNIT=rx3-interface-toggle.service
+# Keyboard hotkey (hold DEL 5 s) -> the same toggle request as the DDJ-400 gesture.
+KEY_UNIT=rx3-key-toggle.service
 DROPIN=/etc/systemd/system/rx3-interface-toggle.service.d
 
 if [ "${1:-install}" = uninstall ]; then
-    systemctl disable --now "$UNIT" "$TOGGLE_PATH_UNIT" 2>/dev/null || true
+    systemctl disable --now "$UNIT" "$TOGGLE_PATH_UNIT" "$KEY_UNIT" 2>/dev/null || true
     rm -f "/etc/systemd/system/$UNIT" \
           "/etc/systemd/system/$TOGGLE_PATH_UNIT" \
           "/etc/systemd/system/$TOGGLE_SERVICE_UNIT" \
+          "/etc/systemd/system/$KEY_UNIT" \
           "$DROPIN/rbpi4b.conf"
     rmdir "$DROPIN" 2>/dev/null || true
     systemctl daemon-reload
@@ -36,11 +39,14 @@ fi
 install -m 644 "$HERE/systemd/$UNIT" "/etc/systemd/system/$UNIT"
 install -m 644 "$HERE/systemd/$TOGGLE_PATH_UNIT" "/etc/systemd/system/$TOGGLE_PATH_UNIT"
 install -m 644 "$HERE/systemd/$TOGGLE_SERVICE_UNIT" "/etc/systemd/system/$TOGGLE_SERVICE_UNIT"
+install -m 644 "$HERE/systemd/$KEY_UNIT" "/etc/systemd/system/$KEY_UNIT"
 rm -f "$DROPIN/rbpi4b.conf"
 rmdir "$DROPIN" 2>/dev/null || true
 systemctl daemon-reload
 systemctl disable rx3-rk3399-ddj400.service 2>/dev/null || true
 systemctl enable --now "$TOGGLE_PATH_UNIT"
+systemctl enable "$KEY_UNIT"
+systemctl restart "$KEY_UNIT"
 systemctl enable "$UNIT"
 systemctl restart "$UNIT"
-echo "installed, enabled and started $UNIT and $TOGGLE_PATH_UNIT"
+echo "installed, enabled and started $UNIT, $TOGGLE_PATH_UNIT and $KEY_UNIT"

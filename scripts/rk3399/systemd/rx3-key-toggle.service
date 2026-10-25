@@ -1,0 +1,18 @@
+# Keyboard hotkey: hold DEL for 5 s to stop the player (console back) or start
+# it again. Installed by install-service.sh; device/key-toggle.py has the why.
+# Change the key or the time with a drop-in (systemctl edit rx3-key-toggle):
+#   Environment=RX3_TOGGLE_KEY=111 RX3_TOGGLE_HOLD_S=5
+[Unit]
+Description=RX3 keyboard hotkey (hold DEL 5 s: player on/off)
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /home/orangepi/RX3-RBPI4B-RK3399/scripts/rk3399/device/key-toggle.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
