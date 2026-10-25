@@ -1018,10 +1018,40 @@ int pointsrc_usb_state(struct prompt_state *S)
  * Back to back, no sleep: one synthesized tap, exactly as menu_fire() sends its own.
  * A wait here would starve the one input loop the band, the window, the drawers and
  * this box all share (docs/07-touch.md's TRAP 2). */
+/* THE EJECT IS NO LONGER rbp's OWN, 2026-10-25. K_USBSTOP's press mutes BOTH
+ * players and calls PlayerSkeleton::notifyMediaDisconnect on EACH (rbp_abi.h), so
+ * with two sticks in the eject of one silenced the deck playing from the other
+ * and left it running with the waveform racing (Orange Pi 3 LTS, both slots fed:
+ * measured, the deck had to be restarted). A plain unplug does not do that: the
+ * watcher's per-slot "umount" on /tmp/udev_usbN leaves the other deck alone and
+ * a deck playing from the stick that went falls into rbp's own emergency loop
+ * (same day, screenshot). So the eject now asks usb-watch.sh for exactly that:
+ * /tmp/usbwatch-stop-N.request -> notify that slot, sync, unmount, keep the
+ * slot empty until the stick is pulled. POINT_USBSTOP_NATIVE=1 sends the native
+ * key sequence instead, as before. */
+#define USBWATCH_STOP_FMT "/tmp/usbwatch-stop-%d.request"
+
 static void usb_stop_send(int ch)
 {
+    const char *native = getenv("POINT_USBSTOP_NATIVE");
+
     if (ch != 1 && ch != 2)
         return;
+    if (!native || native[0] != '1') {
+        char path[64];
+        int fd;
+
+        snprintf(path, sizeof path, USBWATCH_STOP_FMT, ch);
+        fd = real_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            pointsrc_log("usb stop: %s: %s -- nothing ejected", path, strerror(errno));
+            return;
+        }
+        (void)real_write(fd, "eject\n", 6);
+        real_close(fd);
+        pointsrc_log("usb stop: USB %d -> %s (usb-watch ejects that slot alone)", ch, path);
+        return;
+    }
     send_rx_key(K_USBSTOP, OP_PRESS, ch, 0);
     send_rx_key(K_USBSTOP, OP_REPEAT, ch, 0);
     send_rx_key(K_USBSTOP, OP_RELEASE, ch, 0);

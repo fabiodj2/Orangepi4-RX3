@@ -298,6 +298,28 @@ detach() {
     rmdir "$MNT" 2>/dev/null
 }
 
+# --- eject on request (the USB STOP box, fbshim's usb_stop_send) -----------
+# The same per-slot "umount" an unplug sends -- which leaves the other deck
+# alone, where rbp's own K_USBSTOP silenced both (pointsrc.c, 2026-10-25) --
+# then sync and a real unmount, so the stick can be pulled safely. Lazy only
+# as a fallback (something still holds a file open).
+eject() {
+    slot=$1
+    MNT=$(slot_mnt "$slot")
+    CH_MNT=$(slot_chmnt "$slot")
+    log "eject: slot $slot: requested (USB STOP)"
+    notify "$slot" "umount $(slot_path "$slot")"
+    sleep 1
+    sync
+    for m in "$CH_MNT" "$MNT"; do
+        mountpoint -q "$m" || continue
+        if umount "$m" 2>/dev/null; then log "eject: umount $m"
+        else umount -l "$m"; log "eject: umount -l $m (busy)"; fi
+    done
+    rmdir "$CH_MNT" "$MNT" 2>/dev/null
+    log "eject: slot $slot: safe to remove"
+}
+
 rbp_pid() {
     pgrep -n -f '^/lib/ld-linux\.so\.3 /root/pdj/rbp -a$' 2>/dev/null
 }
@@ -339,6 +361,28 @@ tick_slot() {
     fi
     dev=$(sget dev "$n")
     cur=$(sget cur "$n")
+
+    # USB STOP: eject now, and keep the slot empty while that stick stays in.
+    req="$CHROOT/tmp/usbwatch-stop-$n.request"
+    if [ -e "$req" ]; then
+        rm -f "$req"
+        if [ -n "$cur" ]; then
+            eject "$n"
+            sset ejected "$n" "$cur"
+            sset cur "$n" ""
+            sset confirm_left "$n" 0
+            cur=""
+        else
+            log "eject: slot $n: nothing mounted"
+        fi
+    fi
+    ej=$(sget ejected "$n")
+    if [ -n "$ej" ]; then
+        case " $devs " in
+            *" $ej "*) dev="" ;;                       # still in: stay ejected
+            *) sset ejected "$n" ""; log "eject: slot $n: $ej removed" ;;
+        esac
+    fi
 
     if [ -n "$dev" ]; then
         if [ "$dev" != "$cur" ]; then
@@ -437,7 +481,8 @@ run() {
     fi
     for n in $SLOTS; do
         sset cur "$n" ""; sset devs_last "$n" "unset"; sset dev "$n" ""
-        sset confirm_left "$n" 0; sset confirm_wait "$n" 0
+        sset confirm_left "$n" 0; sset confirm_wait "$n" 0; sset ejected "$n" ""
+        rm -f "$CHROOT/tmp/usbwatch-stop-$n.request"   # stale from a previous run
     done
     last_rbp=$(rbp_pid)
     hc_tick=0
