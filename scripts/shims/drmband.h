@@ -275,6 +275,8 @@ int rx3_kms_mode_geom(int *w, int *h);
 
 /* The live scanout (32 bpp only) for pixel readers; -1 when there is none. */
 int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes);
+/* The live scanout's depth, 32 or 16 (0: none): how to read rx3_kms_peek()'s pixels. */
+int rx3_kms_peek_bpp(void);
 
 /* Re-reads the Utility's LCD BRIGHTNESS (1..5) and shows/hides/refills a
  * whole-screen ARGB8888 overlay plane to match, only on a change. Cheap

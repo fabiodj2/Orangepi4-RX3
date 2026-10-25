@@ -169,10 +169,16 @@ static void dev_release(void)
  * This is the only way to tell an overlay from a primary from a cursor: the plane
  * ids are not grouped, and the two we must not steal are the primary the live
  * CRTC is scanning out and the cursor the pointer path may want. */
-static unsigned int plane_type_of(int fd, unsigned int plane_id)
+static int plane_prop_of(int fd, unsigned int plane_id, const char *name,
+                         unsigned long long *out)
 {
     struct drm_mode_obj_get_properties q;
-    unsigned int props[DRM_BAND_MAXFORMATS], vals[DRM_BAND_MAXFORMATS];
+    /* vals are __u64 (prop_values_ptr), not unsigned int: with 32-bit slots
+     * every value but the first came back misaligned -- harmless while "type"
+     * (always property 0) was the only one read, wrong for zpos -- and the
+     * kernel's 8-byte writes overran the array past 32 properties. */
+    unsigned int props[DRM_BAND_MAXFORMATS];
+    __u64 vals[DRM_BAND_MAXFORMATS];
     unsigned int i;
 
     memset(props, 0, sizeof props);
@@ -193,10 +199,20 @@ static unsigned int plane_type_of(int fd, unsigned int plane_id)
         gp.prop_id = props[i];
         if (real_ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &gp) < 0)
             continue;
-        if (strcmp(gp.name, "type") == 0)
-            return vals[i];
+        if (strcmp(gp.name, name) == 0) {
+            *out = vals[i];
+            return 0;
+        }
     }
-    return 0xffffffffu;
+    return -1;
+}
+
+static unsigned int plane_type_of(int fd, unsigned int plane_id)
+{
+    unsigned long long v;
+
+    return plane_prop_of(fd, plane_id, "type", &v) == 0 ? (unsigned int)v
+                                                        : 0xffffffffu;
 }
 
 /* The CRTC that is actually scanning something out, and its INDEX -- the index,
@@ -256,11 +272,13 @@ static int live_crtc(int fd, unsigned int *id, unsigned int *index)
  * carrying rbp's picture reports crtc_id = 102 (bound), so this cannot pick it,
  * and a cursor plane would be an overlay in name only if it were bound to the
  * pointer. */
-static int pick_plane(int fd, unsigned int index, unsigned int fourcc,
-                      unsigned int *out)
+static int pick_plane(int fd, unsigned int crtc_id, unsigned int index,
+                      unsigned int fourcc, unsigned int *out)
 {
     struct drm_mode_get_plane_res pr;
-    unsigned int *ids, i, n;
+    unsigned int *ids, i, n, pass;
+    unsigned long long zp, primary_z = 0;
+    int have_primary_z = 0;
 
     memset(&pr, 0, sizeof pr);
     if (real_ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pr) < 0)
@@ -278,6 +296,31 @@ static int pick_plane(int fd, unsigned int index, unsigned int fourcc,
         return -1;
     }
 
+    /* STACKING. An overlay is only seen if it sits above the primary carrying
+     * rbp's picture. On the RK3399 every free overlay that can carry the format
+     * already does (VOP win 2/3, plane 40 on this unit). On the H6 (sun8i mixer)
+     * the first overlay is the VI plane at zpos 0, BELOW the UI primary at zpos 1:
+     * the band was painted and never seen -- no top menu on the Orange Pi 3 LTS,
+     * 2026-10-25. So pass 0 takes only an overlay whose zpos is above the
+     * primary's, and pass 1 is the old first-fit, for drivers without a zpos
+     * property (or with no overlay above). */
+    for (i = 0; i < n; i++) {
+        struct drm_mode_get_plane gp;
+
+        memset(&gp, 0, sizeof gp);
+        gp.plane_id = ids[i];
+        if (real_ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &gp) < 0)
+            continue;
+        if (gp.crtc_id == crtc_id &&
+            plane_type_of(fd, ids[i]) == DRM_PLANE_TYPE_PRIMARY &&
+            plane_prop_of(fd, ids[i], "zpos", &zp) == 0) {
+            primary_z = zp;
+            have_primary_z = 1;
+            break;
+        }
+    }
+
+    for (pass = have_primary_z ? 0 : 1; pass < 2; pass++)
     for (i = 0; i < n; i++) {
         struct drm_mode_get_plane gp;
         unsigned int fmts[DRM_BAND_MAXFORMATS];
@@ -312,6 +355,9 @@ static int pick_plane(int fd, unsigned int index, unsigned int fourcc,
         if (!found)
             continue;
         if (plane_type_of(fd, ids[i]) != DRM_PLANE_TYPE_OVERLAY)
+            continue;
+        if (pass == 0 &&
+            (plane_prop_of(fd, ids[i], "zpos", &zp) != 0 || zp <= primary_z))
             continue;
 
         *out = ids[i];
@@ -363,7 +409,7 @@ static int drm_band_setup_ex(struct drm_band *b, int w, int h, int bpp,
         drm_band_teardown(b);
         return -1;
     }
-    if (pick_plane(fd, crtc_index, fourcc, &b->plane) != 0) {
+    if (pick_plane(fd, crtc_id, crtc_index, fourcc, &b->plane) != 0) {
         pointsrc_log("menu plane: no free overlay plane on crtc %u can carry"
                      " %c%c%c%c", crtc_id,
                      (char)(fourcc & 0xff), (char)((fourcc >> 8) & 0xff),
@@ -882,14 +928,17 @@ void *rx3_kms_scanout(int w, int h, int bpp, int *pitch_bytes)
 }
 
 /* The scanout as it stands, for readers that ask what is ON the glass (pointsrc's
- * strip_drawn_page()): 0 and the geometry when a 32 bpp scanout exists, -1 when
- * there is none (knob off, not set up yet, failed). Never sets one up. */
+ * strip_drawn_page()): 0 and the geometry when a 32 or 16 bpp scanout exists, -1
+ * when there is none (knob off, not set up yet, failed). Never sets one up. Which
+ * of the two it is: rx3_kms_peek_bpp(). 16 bpp is the H6's (Orange Pi 3 LTS) fb0
+ * at 16 bpp, 2026-10-25: rbp's RGB565 then goes out with one memcpy instead of a
+ * 16->32 convert per frame. */
 int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes)
 {
     int ok;
 
     pthread_mutex_lock(&g_scan_lock);
-    ok = g_scan.pix != NULL && g_scan.bpp == 32;
+    ok = g_scan.pix != NULL && (g_scan.bpp == 32 || g_scan.bpp == 16);
     if (ok) {
         *pix = g_scan.pix;
         *w = g_scan.w;
@@ -898,6 +947,16 @@ int rx3_kms_peek(const void **pix, int *w, int *h, int *pitch_bytes)
     }
     pthread_mutex_unlock(&g_scan_lock);
     return ok ? 0 : -1;
+}
+
+int rx3_kms_peek_bpp(void)
+{
+    int bpp;
+
+    pthread_mutex_lock(&g_scan_lock);
+    bpp = g_scan.pix != NULL ? g_scan.bpp : 0;
+    pthread_mutex_unlock(&g_scan_lock);
+    return bpp;
 }
 
 /* Block until the scanout's CRTC starts its next vertical blank. With /dev/fb0

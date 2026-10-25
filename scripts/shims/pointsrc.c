@@ -1301,6 +1301,16 @@ static int scan_px(const unsigned char *pix, int w, int h, int pitch, int lx, in
 
     if (sx < 0 || sx >= w || sy < 0 || sy >= h)
         return -1;
+    if (rx3_kms_peek_bpp() == 16) {             /* RGB565, widened to 8 bits */
+        unsigned int v;
+
+        q = pix + sy * pitch + sx * 2;
+        v = (unsigned int)q[0] | (unsigned int)q[1] << 8;
+        *r = (int)((v >> 8 & 0xf8) | (v >> 13));
+        *g = (int)((v >> 3 & 0xfc) | (v >> 9 & 3));
+        *b = (int)((v << 3 & 0xf8) | (v >> 2 & 7));
+        return 0;
+    }
     q = pix + sy * pitch + sx * 4;              /* XRGB8888: B G R X */
     *b = q[0];
     *g = q[1];
@@ -1868,10 +1878,20 @@ static void screenshot_tick(void)
                 int x;
 
                 memset(row, 0, rowbytes);
-                for (x = 0; x < w; x++) {
-                    row[x * 3 + 0] = src[x * 4 + 0];   /* B */
-                    row[x * 3 + 1] = src[x * 4 + 1];   /* G */
-                    row[x * 3 + 2] = src[x * 4 + 2];   /* R */
+                if (rx3_kms_peek_bpp() == 16) {
+                    for (x = 0; x < w; x++) {           /* RGB565 -> B G R */
+                        unsigned int v = (unsigned int)src[x * 2] |
+                                         (unsigned int)src[x * 2 + 1] << 8;
+                        row[x * 3 + 0] = (unsigned char)((v << 3 & 0xf8) | (v >> 2 & 7));
+                        row[x * 3 + 1] = (unsigned char)((v >> 3 & 0xfc) | (v >> 9 & 3));
+                        row[x * 3 + 2] = (unsigned char)((v >> 8 & 0xf8) | (v >> 13));
+                    }
+                } else {
+                    for (x = 0; x < w; x++) {
+                        row[x * 3 + 0] = src[x * 4 + 0];   /* B */
+                        row[x * 3 + 1] = src[x * 4 + 1];   /* G */
+                        row[x * 3 + 2] = src[x * 4 + 2];   /* R */
+                    }
                 }
                 (void)write(fd, row, rowbytes);
             }
