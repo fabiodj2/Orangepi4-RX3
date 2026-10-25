@@ -39,6 +39,11 @@ HP_GAIN=${RX3_HP_GAIN_X:-4}
 # on master_gain_linear() for the full numbers from both passes.
 MASTER_GAIN_DB=${RX3_MASTER_GAIN_DB:-22}
 USB_SEG=${USBWATCH_SEG:-/usb}
+# RX3_AUDIO_CPUS + RX3_UI_CPUS (both, e.g. 2-3 and 0-1): split mode, see
+# scripts/rk3399/cpu-split.sh. It replaces the gui_task/JuceALSA pins below.
+CPU_SPLIT="$REPO/scripts/rk3399/cpu-split.sh"
+SPLIT=0
+[ -n "${RX3_AUDIO_CPUS:-}" ] && [ -n "${RX3_UI_CPUS:-}" ] && SPLIT=1
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
 
@@ -95,6 +100,11 @@ stop_all() {
     fi
     # The toolkit core's rbp variant (RX3_CORE=toolkit) is only ever a bind mount.
     while mountpoint -q "$RUNTIME/root/pdj/rbp"; do umount "$RUNTIME/root/pdj/rbp" || break; done
+    [ "$SPLIT" = 1 ] && sh "$CPU_SPLIT" restore
+    if [ -e /run/rx3-rbpi4b-rt-runtime ]; then
+        cat /run/rx3-rbpi4b-rt-runtime > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
+        rm -f /run/rx3-rbpi4b-rt-runtime
+    fi
     cpu_governor restore
 }
 
@@ -256,6 +266,9 @@ nohup "$DDJ" -v -f "$RUNTIME/tmp/rb-ctrl.fifo" \
 # binary); rbpi4b's patch-rbp-depth.py is the way to 32 (both or neither).
 # DFB_PRESENT unset = 'off', which the driver auto-upgrades to 'scale' on a fb
 # that is not 1280x800 -> aspect-fit 1728x1080 with 96 px bars.
+# RB_DFB_PRESENT=convert: for a 16 bpp fb0 (H6, video=...-16 on the kernel
+# command line): logical and real then match, 'auto' would stay 'off' and skip
+# the KMS scanout, so it is named -- the "convert" of 16 to 16 is one memcpy.
 # RX3_RBP_CPUS: CPU list for rbp and every thread it starts (taskset -c). The
 # RK3399 is big.LITTLE: cpu0-3 Cortex-A53 @1.4 GHz, cpu4-5 Cortex-A72 @1.8 GHz;
 # unpinned, gui_task (which draws and presents) wanders onto the A53s.
@@ -266,6 +279,7 @@ nohup ${CPUS:+taskset -c "$CPUS"} chroot "$RUNTIME" env \
     PATH=/bin:/sbin:/usr/bin:/usr/sbin \
     DFBARGS="system=fbdev,mode=1280x800,pixelformat=RGB16,primary-only,no-hardware" \
     FB_LIE_BPP=16 \
+    ${RB_DFB_PRESENT:+DFB_PRESENT="$RB_DFB_PRESENT"} \
     DFB_PRESENT_FIT="${RB_DFB_PRESENT_FIT:-fit}" \
     PAN_PACER_MS="${RB_PAN_PACER_MS:-16.666666}" \
     POINT_KIND="${RB_POINT_KIND:-abs}" \
@@ -297,6 +311,7 @@ RBP_PID=$!
 # vblank. Measured over 30 s: unpinned 57.4 fps avg, worst second 42, 9 seconds
 # under 57; pinned 59.9 avg, worst 58, none under 57. RX3_GUI_CPUS= to skip.
 GUI_CPUS=${RX3_GUI_CPUS-4,5}
+[ "$SPLIT" = 1 ] && GUI_CPUS=
 if [ -n "$GUI_CPUS" ]; then
     for i in $(seq 1 40); do
         T=$(ps -L -o tid=,comm= -p "$RBP_PID" 2>/dev/null | awk '$2=="gui_task"{print $1; exit}')
@@ -317,6 +332,17 @@ fi
 # the kernel command line (CONFIG_RT_GROUP_SCHED + cgroup v2 cpu controller give a
 # service cgroup no RT runtime: EPERM, even as root). RX3_AUDIO_RT_PRIO= to skip.
 RT_PRIO=${RX3_AUDIO_RT_PRIO-45}
+# RX3_RT_UNLIMITED=1: for kernels without the rt_group_sched= parameter (the
+# H6's legacy 6.12): with the cgroup cpu controller on, a service's group has no
+# RT runtime and chrt gets EPERM. kernel.sched_rt_runtime_us=-1 turns the RT
+# bandwidth check off, so it succeeds. The price is no throttling of a runaway
+# RT thread; with cpu-split.sh it is confined to the audio cores. The previous
+# value is put back by stop_all.
+RT_SAVE=/run/rx3-rbpi4b-rt-runtime
+if [ -n "$RT_PRIO" ] && [ "${RX3_RT_UNLIMITED:-0}" = 1 ]; then
+    [ -e "$RT_SAVE" ] || cat /proc/sys/kernel/sched_rt_runtime_us > "$RT_SAVE"
+    echo -1 > /proc/sys/kernel/sched_rt_runtime_us && echo "sched_rt_runtime_us: -1 (RX3_RT_UNLIMITED)"
+fi
 if [ -n "$RT_PRIO" ]; then
     for i in $(seq 1 40); do
         A=$(ps -L -o tid=,comm= -p "$RBP_PID" 2>/dev/null | awk '$2=="JuceALSA"{print $1; exit}')
@@ -347,6 +373,7 @@ if [ -n "$RT_PRIO" ]; then
     # SCHED_FIFO 45 render slice fits fine alongside the decoders. RX3_AUDIO_CPU=
     # (empty) restores the old any-core behavior if a future regression shows up.
     AUDIO_CPU=${RX3_AUDIO_CPU-0-3}
+    [ "$SPLIT" = 1 ] && AUDIO_CPU=
     if [ -n "$AUDIO_CPU" ] && [ -n "$A" ]; then
         if taskset -pc "$AUDIO_CPU" "$A" >/dev/null; then
             echo "JuceALSA $A: pinned to cpu $AUDIO_CPU"
@@ -356,6 +383,10 @@ if [ -n "$RT_PRIO" ]; then
     fi
 fi
 
+# After the RT step: chrt does not touch affinity, and the split must see
+# JuceALSA. `full` = the rest of the system and the IRQs too, this once.
+[ "$SPLIT" = 1 ] && sh "$CPU_SPLIT" apply "$RBP_PID" full
+
 sleep 8
 env RX3_RUNTIME="$RUNTIME" USBWATCH_SEG="$USB_SEG" sh "$WATCHER" start
 sleep 4
@@ -363,7 +394,12 @@ status
 
 if [ "${1:-start}" = run ]; then
     trap 'stop_all; exit 0' TERM INT
-    while kill -0 "$RBP_PID" 2>/dev/null; do sleep 2; done
+    # Split mode: rbp starts threads as it goes (a PcmReader per track load),
+    # so its pins are re-checked on every pass; a pinned thread is not touched.
+    while kill -0 "$RBP_PID" 2>/dev/null; do
+        sleep 2
+        [ "$SPLIT" = 1 ] && sh "$CPU_SPLIT" apply "$RBP_PID" >/dev/null 2>&1
+    done
     # The DDJ-400 interface gesture turned the screen OFF (toggle-interface.sh):
     # keep ddj400-bridge up to hear the gesture that turns it back ON, which
     # restarts the service. Exiting here would make systemd restart rbp at once.
