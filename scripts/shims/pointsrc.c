@@ -27,8 +27,6 @@
                           * 2026-10-07; fxpad_zone.h carries the rectangle, the two
                           * wire forms and the momentary restore */
 #include "hc_zone.h"
-#include "xfader_zone.h"  /* the SHORTCUT screen's CROSSFADER CURVE picker --
-                           * item, 2026-10-17 */
 #include "drmband.h"
 #include "syscalls.h"
 #include "envutil.h"
@@ -1726,44 +1724,6 @@ static int master_rec_status(void)
     return ((int (*)(void *))DJ_ENGINE_GET_REC_STATUS)(engine) ? 1 : 0;
 }
 
-/* The CROSSFADER CURVE picker's read side (item, 2026-10-17): same DJ_ENGINE_GLOBAL
- * singleton and the same this-only call shape as master_rec_status() just above,
- * read-only. Never used to decide what to send -- that is always a fresh
- * send_rx_key_f(K_FADERCURVE, ...) on a tap, same as every other control in this
- * file; this is only ever read BACK, by xfader_curve_tick() below. */
-static int xfader_curve_value(void)
-{
-    void *engine = *(void *volatile *)DJ_ENGINE_GLOBAL;
-
-    if (!engine)
-        return 0;
-    return ((int (*)(void *))DJ_ENGINE_GET_XFADER_CURVE)(engine);
-}
-
-/* Pushes rbp's live curve value into xfader_zone.c's own small state (same shape as
- * master_rec_blink_tick() pushing into menu_zone.c's menu_set_blink()), so
- * menu_draw.c's menu_xfader_live() can read WHICH icon to highlight through
- * xfader_zone.h alone, with no cross-file call into this one. 1/2/3 -> icon 0/1/2;
- * anything else (0=THRU, or no engine yet) -> -1, "nothing selected". */
-static void xfader_curve_tick(void)
-{
-    int showing = rbp_i32(UIBROWSE_GLOBAL + UIBROWSE_OFF_MODE) == BROWSE_MODE_SHORTCUT;
-
-    /* No menu_window_is_open()/menu_is_open()/side_any_open() term here unlike the
-     * touch rung's own gate (pointer_report(), above): those exist to award FIRST
-     * REFUSAL on glass two surfaces could both claim, and nothing else in this shim
-     * draws anywhere near y 670..708 -- the band's own geometry comment in
-     * xfader_zone.h. Drawing is therefore gated on the screen alone. */
-    xfader_set_showing(showing);
-    if (showing) {
-        int v = xfader_curve_value();
-
-        xfader_set_selected(v >= 1 && v <= XFADER_ICONS ? v - 1 : -1);
-    } else {
-        xfader_set_selected(-1);
-    }
-}
-
 static void master_rec_state_tick(void)
 {
     static int last_recording = -1;
@@ -1982,7 +1942,6 @@ static void *bfx_thread(void *arg)
         master_rec_state_tick();
         master_rec_toggle_tick();
         master_rec_blink_tick();
-        xfader_curve_tick();
         usleep(50000);
     }
     return NULL;
@@ -2876,16 +2835,6 @@ static void side_log_transitions(void)
  * meaning, so `held_ms` is not passed on. */
 static int status_latched;   /* a STATUS-strip gesture is being swallowed (below) */
 
-/* The CROSSFADER CURVE picker's own press latch (xfader_zone.h's band, handled
- * below): `xfader_press_down` is this rung's own was-down edge detector, same
- * shape every feeder in this file carries; `xfader_press_icon` is which icon (or
- * -1) the press landed on, valid only while `xfader_press_down`. Reset at device
- * loss alongside util_reset()/fxpad_reset() and friends -- a press left latched
- * by a finger that went away with the device would make the next press's release
- * look like this gesture's own. */
-static int xfader_press_down;
-static int xfader_press_icon = -1;
-
 static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
 {
     static int last_down;
@@ -3234,47 +3183,6 @@ static void pointer_report(int down, int x, int y, int allow_menu, int held_ms)
         verdict = util_feed(&ust, down, x, y, &uact, &uvalue);
         if (verdict == MZ_FEED_TAKEN)
             util_send(uact, uvalue);
-    }
-
-    /* THE CROSSFADER CURVE PICKER (xfader_zone.h), same rung as UTILITY just above
-     * and for the same reason: it is a band of glass rbp draws nothing on (it is
-     * blank, not rbp's own ink), gated the same way -- allow_menu, and nothing else
-     * already up in front of it. A DIFFERENT screen than UTILITY (SHORTCUT, mode 10
-     * vs 7), so the two rungs never both fire on the same report, and the order
-     * between them does not matter.
-     *
-     * THE RULE IS TAP, NOT DRAG: down inside an icon's rect latches that icon, and
-     * only a release found inside the SAME icon fires it -- a finger that lands on
-     * one icon and lifts over another (or off the band) fires nothing, the same
-     * "a drag is not a tap" caution util_zone.c's own header takes for its list.
-     * This needs none of that module's scroll/edit complexity: the band has three
-     * static targets and no state rbp can put it in that changes what a tap means. */
-    if (verdict == MZ_FEED_NONE && allow_menu &&
-        !menu_window_is_open() && !menu_is_open() && !side_any_open() &&
-        rbp_i32(UIBROWSE_GLOBAL + UIBROWSE_OFF_MODE) == BROWSE_MODE_SHORTCUT) {
-        if (down) {
-            if (xfader_in_band(x, y)) {
-                xfader_press_down = 1;
-                xfader_press_icon = xfader_hit(x, y);   /* -1: in band, no icon */
-                verdict = MZ_FEED_TAKEN;
-            }
-        } else if (xfader_press_down) {
-            /* THE RELEASE OF A PRESS THIS RUNG TOOK, whatever it lands on --
-             * declined-press-must-still-see-release (fxpad_zone.h's term): rbp
-             * never saw the down edge, so it must not be handed the up either. */
-            int released_on = xfader_hit(x, y);
-
-            if (xfader_press_icon >= 0 && released_on == xfader_press_icon) {
-                int param = XFADER_PARAM(xfader_press_icon);
-
-                send_rx_key_f(K_FADERCURVE, OP_VALUE, CH_GLOBAL, param, (float)param);
-                pointsrc_log("pointsrc: crossfader curve icon %d -> K_FADERCURVE"
-                             " param %d", xfader_press_icon, param);
-            }
-            xfader_press_down = 0;
-            xfader_press_icon = -1;
-            verdict = MZ_FEED_TAKEN;
-        }
     }
 
     if (verdict == MZ_FEED_TAP) {
@@ -3880,12 +3788,6 @@ static void *reader_thread(void *arg)
          * the device would make the next press look like a continuation of it --
          * carrying the old anchor, and with it the wrong row for a tap. */
         util_reset();
-        /* ...and the CROSSFADER CURVE picker's own latch, the same failure as
-         * UTILITY just above and the same remedy: a press left latched by a
-         * finger that went away with the device would make the next press's
-         * release look like this one's own tap. */
-        xfader_press_down = 0;
-        xfader_press_icon = -1;
         /* ...and the waveform swipe, whose failure is the ANCHOR: a press left
          * anchored by a finger that went away with the device would make the next
          * press look like a continuation of it, and the first move it reported would
@@ -3957,12 +3859,6 @@ int pointsrc_start(void)
                             * reports as the rest of the menu, so POINT_MENU=0
                             * turns it off too and must not leave a press latched
                             * for whenever it is turned back on */
-    if (!menu_enabled) {
-        /* and the CROSSFADER CURVE picker, gated on the same allow_menu as
-         * UTILITY just above */
-        xfader_press_down = 0;
-        xfader_press_icon = -1;
-    }
     if (!menu_enabled)
         wave_reset();      /* and the waveform swipe: it is offered the same reports
                             * and gated on the same switch, so POINT_MENU=0 must leave

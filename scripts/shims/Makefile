@@ -410,15 +410,14 @@ FBSHIM_OBJS := fb_shim.o tscfake.o pointsrc.o point_xform.o touch_zone.o \
                menu_window.o menu_window_paint.o menu_keyboard.o \
                browser_link.o drmband.o side_zone.o side_paint.o util_zone.o \
                wave_zone.o prompt_zone.o prompt_paint.o fx_zone.o fx_paint.o \
-               hc_zone.o usb_label.o fxpad_zone.o fxpad_paint.o plinn_scan.o \
-               xfader_zone.o xfader_paint.o
+               hc_zone.o usb_label.o fxpad_zone.o fxpad_paint.o plinn_scan.o
 FBSHIM_HDRS := tscfake.h pointsrc.h point_xform.h touch_zone.h syscalls.h \
                envutil.h fb_cursor.h cursor_paint.h fbdev.h menu_zone.h \
                menu_paint.h menu_font.h menu_draw.h drmband.h menu_window.h \
                menu_window_paint.h menu_keyboard.h browser_link.h side_zone.h \
                side_paint.h rbp_vu.h util_zone.h wave_zone.h prompt_zone.h \
                prompt_paint.h fx_zone.h fx_paint.h hc_zone.h usb_label.h \
-               fxpad_zone.h fxpad_paint.h plinn_scan.h xfader_zone.h xfader_paint.h
+               fxpad_zone.h fxpad_paint.h plinn_scan.h
 
 fbshim.so: $(FBSHIM_OBJS) rbp_key.o fader_state.o rbp_transport.o \
            $(FBSHIM_HDRS) rbp_transport.h \
@@ -455,8 +454,7 @@ menu_paint.o: menu_paint.c menu_paint.h menu_zone.h menu_font.h
 menu_draw.o: menu_draw.c menu_draw.h menu_paint.h menu_zone.h fbdev.h \
              point_xform.h pointsrc.h drmband.h menu_window.h menu_window_paint.h \
              side_zone.h side_paint.h rbp_vu.h prompt_zone.h prompt_paint.h \
-             fx_zone.h fx_paint.h fxpad_zone.h fxpad_paint.h xfader_zone.h \
-             xfader_paint.h
+             fx_zone.h fx_paint.h fxpad_zone.h fxpad_paint.h
 # menu_window_paint.o takes menu_paint.h for the palette and the view, and
 # menu_window.h for the rectangles it must draw the marks exactly inside -- a
 # dependency that is not written down is a rebuild that silently does not happen.
@@ -527,20 +525,6 @@ fxpad_zone.o: fxpad_zone.c fxpad_zone.h menu_zone.h
 # exactly as fx_paint.o takes fx_zone.h's -- and it takes menu_zone.h through
 # menu_paint.h for MZ_LOGICAL_W/H, the space fxpad_paint_w/h scale out of.
 fxpad_paint.o: fxpad_paint.c fxpad_paint.h fxpad_zone.h menu_paint.h menu_zone.h
-# xfader_zone.o is the pure half of the CROSSFADER CURVE band (item, 2026-10-17):
-# the band's rect, the three icons' rects and the hit test, plus the two small
-# pieces of live-state storage (xfader_set_selected/xfader_set_showing) pointsrc.c
-# pushes rbp's own engine state through -- same split menu_zone.h's
-# menu_set_blink()/menu_blink() already uses for MASTER REC's indicator. No
-# rbp_abi.h: the DJ_ENGINE_* address and the UIBROWSE read are pointsrc.c's own,
-# this object only stores what it is told.
-xfader_zone.o: xfader_zone.c xfader_zone.h
-# xfader_paint.o takes xfader_zone.h for the band's rect and menu_paint.h for the
-# palette and menu_font.h for the label's glyphs, exactly as fxpad_paint.o takes
-# fxpad_zone.h's -- and menu_zone.h through menu_paint.h for MZ_LOGICAL_W/H, the
-# space xfader_paint_w/h scale out of.
-xfader_paint.o: xfader_paint.c xfader_paint.h xfader_zone.h menu_paint.h \
-                menu_font.h menu_zone.h
 # browser_link.o is the one object in the menu that opens a file, so its header is
 # where the three paths and the frame's own header layout live -- nothing else in
 # the shim names /tmp/rbwin.*.
@@ -709,7 +693,6 @@ pcmprobe: ../../tools/pcmprobe.c
 TESTS := test_point test_audio test_midi test_flx4 test_kbd test_cursor \
          test_evdev test_cursor_dev test_menu test_side test_window test_keyboard \
          test_menu_dev test_util test_wave test_prompt test_fx test_hc test_fxpad \
-         test_xfader \
          test_led_table test_plinn_scan test_controllers test_usblabel test_netalias
 
 test_point: test_point.c tscfake.c point_xform.c touch_zone.c $(FBSHIM_HDRS)
@@ -939,22 +922,6 @@ test_fxpad: test_fxpad.c fxpad_zone.c fxpad_paint.c menu_paint.c menu_zone.c \
 	    -Wall -Wextra -static -o $@ test_fxpad.c fxpad_zone.c fxpad_paint.c \
 	    menu_paint.c menu_zone.c side_zone.c
 
-# test_xfader links the PRODUCTION xfader_zone.c AND xfader_paint.c, test_fxpad's
-# own reasoning: the icons' line art is drawn over the band's own fill and "which
-# pixel is ink" is exactly the property a copy of the code would get wrong without
-# anyone noticing. xfader_zone.c is pure (rbp's curve value and the mode arrive
-# through xfader_set_selected()/xfader_set_showing(), not a live read), so the
-# whole gesture and the whole picture can be driven on a host with no Pi, no panel
-# and no player. menu_paint.c and menu_zone.c come along for xfader_paint.c's own
-# reason -- the palette is menu_pixel()'s and menu_paint.c's own layout calls into
-# menu_zone.c, which calls side_any_open().
-test_xfader: test_xfader.c xfader_zone.c xfader_paint.c menu_paint.c menu_zone.c \
-             side_zone.c xfader_zone.h xfader_paint.h menu_paint.h menu_font.h \
-             menu_zone.h side_zone.h
-	$(CC) -O2 -march=armv5t -mfloat-abi=soft -fno-stack-protector \
-	    -Wall -Wextra -static -o $@ test_xfader.c xfader_zone.c xfader_paint.c \
-	    menu_paint.c menu_zone.c side_zone.c -lm
-
 test_audio: test_audio.c s24pack.c s24pack.h mirror_policy.c mirror_policy.h \
             master_policy.c master_policy.h pace_policy.c pace_policy.h
 	$(CC) -O2 -march=armv5t -mfloat-abi=soft -fno-stack-protector \
@@ -1132,20 +1099,11 @@ test_cursor_dev.o: test_cursor_dev.c fb_cursor.h fbdev.h cursor_paint.h \
 # pins. Both are the REAL objects, so what is pinned is the shipped pad; and like the
 # picker's there is no scenario that engages a finger on the cell, so what the tick pins
 # is that an IDLE pad costs the sync nothing.
-#
-# xfader_zone.o and xfader_paint.o are here for the fourth box: menu_draw.o now
-# syncs the CROSSFADER CURVE band's own plane too (menu_xfader_plane_sync()),
-# driven by xfader_showing() the same way the pad's plane is driven by
-# fxpad_busy(). Both are the REAL objects, and like the pad there is no scenario
-# here that puts rbp on the SHORTCUT screen, so what this pins is that the band
-# stays OFF (and costs the sync nothing) everywhere this file's scenarios already
-# put rbp.
 MENU_TEST_OBJS := test_menu_dev.o menu_draw.o menu_paint.o menu_zone.o \
                   menu_window.o menu_window_paint.o menu_keyboard.o \
                   browser_link.o point_xform.o drmband.o side_zone.o \
                   side_paint.o prompt_zone.o prompt_paint.o fx_zone.o fx_paint.o \
-                  fxpad_zone.o fxpad_paint.o xfader_zone.o xfader_paint.o \
-                  fader_state.o rbp_transport.o
+                  fxpad_zone.o fxpad_paint.o fader_state.o rbp_transport.o
 
 # The drawer's wrappers, and they are the ONE exception to "drmband.o is the real
 # object". --wrap=drm_band_* lets scenario_drawer() hand the module a plane that
